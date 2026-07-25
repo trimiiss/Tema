@@ -129,6 +129,30 @@ def test_retry_gives_up_and_reraises():
     assert query.execute.call_count == 2
 
 
+def test_a_retry_is_logged(caplog):
+    """A silent recovery is unattributable later.
+
+    This guard used to swallow the transport error with no record, so when
+    `document_fields` came back duplicated, "no retry appears in the log" read
+    as evidence that no retry had happened — when a retry could never have
+    appeared there in the first place.
+    """
+    import httpx
+    import logging
+    from app.core.database import execute_with_retry
+
+    query = MagicMock()
+    query.execute.side_effect = [
+        httpx.RemoteProtocolError("ConnectionTerminated"),
+        MagicMock(data=[{"status": "confirmed"}]),
+    ]
+    with caplog.at_level(logging.WARNING, logger="app.core.database"):
+        execute_with_retry(query)
+    logged = [r.getMessage() for r in caplog.records]
+    assert any("RemoteProtocolError" in m for m in logged)
+    assert any("recovered on attempt 2" in m for m in logged)
+
+
 def test_retry_does_not_mask_a_genuine_error():
     from app.core.database import execute_with_retry
 

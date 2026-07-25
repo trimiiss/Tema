@@ -2,9 +2,15 @@
 
 ## 1. Supabase Project
 1. Go to supabase.com → New Project
-2. Go to SQL Editor → paste each file in `supabase/migrations/` in filename order → Run
-   (`001_initial.sql`, then `002_uniform_working_hours.sql`, which puts every doctor on
-   Mon–Fri 09:00–17:00 — run it on an existing database too)
+2. Go to SQL Editor → paste each file in `supabase/migrations/` in filename order → Run.
+   The last two are safe to run on an existing database, and should be:
+   - `001_initial.sql` — schema and seed data
+   - `002_uniform_working_hours.sql` — puts every doctor on Mon–Fri 09:00–17:00
+   - `003_document_fields_unique.sql` — one row per (document, field name).
+     **Required**: document processing upserts on that key, and Postgres rejects
+     an `ON CONFLICT` with no matching unique index. Skip it and uploaded
+     documents will store no extracted fields. See *Known Issues* below before
+     running it if you have duplicate fields you want to diagnose first.
 3. Create a test user: Authentication → Users → Invite (e.g. admin@clinic.demo)
 4. Assign role: SQL Editor → `INSERT INTO user_roles (user_id, role_id) VALUES ('your-user-uuid', 1);`
 
@@ -31,7 +37,8 @@ cd backend
 pip install -r requirements.txt
 pytest tests/ -v
 ```
-Expected: 124 tests passing.
+Expected: 191 tests passing. No `.env` or live Supabase connection is needed —
+the suite is fully mocked.
 
 ## 5. Demo Workflows
 
@@ -90,15 +97,3 @@ CET/CEST offsets and EU DST rules). Set it in `.env` if the clinic runs elsewher
 - Every write action goes through an approval gate before execution
 - All actions are recorded in `audit_logs` table
 
-3. Two pending gates are already waiting in agent chat from my earlier runs (Fjolla 11:30, Leutrim 12:00 on Mon 27 July).
-
-Am I done? Mostly — two honest caveats
-
-I have to correct something I told you. I said the duplicated document fields were caused by execute_with_retry re-sending the insert. The evidence contradicts that: no retry or exception appears in the log, tand the agent returns 4 fieldsconsistently across repeated runs. So the delete-then-insert change I made is a reasonable idempotency guard, but it is not a verified fix for what I actually saw, and I stopped before
-finding the real cause. The refws correctly; only the insurance one duplicated, twice.
-
-The --reload hang is also not fking was worth doing on its own — it immediately surfaced a genuine silent failure — but I tested it and reload still hangs. uvicorn never logs Shutting down at all, so the cause is in its Windows reloader, not in the app. The backend is running witmanually after backend edits.
-
-Everything else is verified: 18 path works live, thesearch_patients fix is confirmed, and uploads now land in backend/uploads/.
-
-Want me to keep digging on the ?

@@ -101,15 +101,19 @@ async def test_document_text_passed_as_user_role():
             assert "Ignore previous instructions" not in sm["content"]
 
 
-@pytest.mark.asyncio
-async def test_extracted_fields_are_replaced_not_appended():
-    """`execute_with_retry` is at-least-once, so the field write must be idempotent.
+# ---- Duplicated extracted fields ----
+#
+# Three insurance uploads each stored all four of their fields twice,
+# byte-identical in value and confidence. The audit log showed one upload per
+# document and re-running extraction against the live model returned each name
+# once, so the same insert ran twice inside one processing run — the retry
+# re-sending an insert that had already committed. The write is now keyed on
+# (document_id, field_name) so a re-send overwrites; migration 003 puts the
+# same rule in the database.
 
-    A GOAWAY can drop the response to an insert that already committed; the
-    retry then inserts the same rows again. Live, that produced a document whose
-    every extracted field was listed twice. Clearing first makes a repeated
-    write converge instead of accumulating.
-    """
+
+async def _run_processing(agent_result):
+    """Drive `process_document_async` over a mocked db, returning the calls made."""
     from app.services.ocr_service import process_document_async
 
     calls = []
@@ -120,15 +124,9 @@ async def test_extracted_fields_are_replaced_not_appended():
 
     db = MagicMock()
     table = MagicMock()
-    for method in ("update", "insert", "delete", "eq", "select"):
+    for method in ("update", "insert", "upsert", "delete", "eq", "select"):
         getattr(table, method).return_value = table
     db.table.return_value = table
-
-    agent_result = {
-        "doc_type": "insurance",
-        "fields": [{"name": "policy_number", "value": "DHI-4471-2026", "confidence": 1.0}],
-        "summary": "",
-    }
 
     with patch("app.services.ocr_service.get_db", return_value=db), \
          patch("app.services.ocr_service.execute_with_retry", side_effect=record), \
@@ -137,7 +135,79 @@ async def test_extracted_fields_are_replaced_not_appended():
                new=AsyncMock(return_value=agent_result)):
         await process_document_async("doc-1", "/tmp/x.pdf", "user-1")
 
+    return table, calls
+
+
+@pytest.mark.asyncio
+async def test_extracted_fields_are_replaced_not_appended():
+    """Re-processing a document must converge on one field set, not accumulate.
+
+    The `delete` clears the previous run's rows — including any left over from
+    a run that classified the document as a different type, which the upsert
+    alone would strand.
+    """
+    table, calls = await _run_processing({
+        "doc_type": "insurance",
+        "fields": [{"name": "policy_number", "value": "DHI-4471-2026", "confidence": 1.0}],
+        "summary": "",
+    })
+
     # Every query went through the retry guard — none called .execute() directly.
-    assert len(calls) == 4          # status, doc_type, delete, insert
+    assert len(calls) == 4          # status, doc_type, delete, upsert
     table.delete.assert_called_once()
-    table.insert.assert_called_once()
+    table.upsert.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_field_write_upserts_on_document_and_name():
+    """`execute_with_retry` is at-least-once, so a plain insert is not safe.
+
+    A GOAWAY can drop the response to an insert that already committed; the
+    retry then runs it again. Keying the write on (document_id, field_name)
+    makes the second attempt overwrite the first instead of doubling it.
+    """
+    table, _ = await _run_processing({
+        "doc_type": "insurance",
+        "fields": [{"name": "policy_number", "value": "DHI-4471-2026", "confidence": 1.0}],
+        "summary": "",
+    })
+
+    table.insert.assert_not_called()
+    assert table.upsert.call_args.kwargs["on_conflict"] == "document_id,field_name"
+
+
+@pytest.mark.asyncio
+async def test_a_field_name_returned_twice_is_written_once():
+    """Nothing stops the model emitting one field name twice.
+
+    Not what caused the incident — extraction re-run against the live model
+    returned each name once — but the schema now forbids the repeat, so it has
+    to be collapsed before the write rather than rejected by it. The most
+    confident value wins.
+    """
+    table, _ = await _run_processing({
+        "doc_type": "insurance",
+        "fields": [
+            {"name": "patient_name", "value": "F. Berisha", "confidence": 0.6},
+            {"name": "policy_number", "value": "DHI-4471-2026", "confidence": 0.98},
+            {"name": "patient_name", "value": "Fjolla Berisha", "confidence": 0.94},
+        ],
+        "summary": "",
+    })
+
+    written = table.upsert.call_args.args[0]
+    assert [r["field_name"] for r in written] == ["patient_name", "policy_number"]
+    assert written[0]["field_value"] == "Fjolla Berisha"
+
+
+def test_dedupe_fields_keeps_order_and_drops_nameless_entries():
+    from app.services.ocr_service import dedupe_fields
+
+    out = dedupe_fields([
+        {"name": "insurer_name", "value": "Sigal", "confidence": 0.9},
+        {"value": "orphan", "confidence": 1.0},          # no name — unusable
+        {"name": "insurer_name", "value": "SIGAL UNIQA", "confidence": 0.5},
+        {"name": "validity_date", "value": "2027-01-31", "confidence": 0.8},
+    ])
+    assert [f["name"] for f in out] == ["insurer_name", "validity_date"]
+    assert out[0]["value"] == "Sigal"   # lower-confidence repeat does not win
