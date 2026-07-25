@@ -39,8 +39,15 @@ def execute_with_retry(query, attempts: int = 3):
     postgrest-py's httpx client hardcodes http2=True; Supabase closes idle
     HTTP/2 connections with a GOAWAY, and a pooled connection reused just
     after that lands mid-request as `ConnectionTerminated`. The retry opens a
-    fresh connection. Reads are safe to repeat; writes reach here only through
-    endpoints whose inserts are idempotent for this purpose.
+    fresh connection.
+
+    Retries are **at-least-once**, not exactly-once: the connection can die
+    after the query committed but before its response arrived, and the retry
+    then runs it again. Reads and updates are safe to repeat. An **insert is
+    not** — `document_fields` came back with every field duplicated this way —
+    so a caller inserting under this guard must make the write idempotent
+    itself, e.g. by deleting the rows it is about to replace (see
+    `ocr_service.process_document_async`).
 
     A `.maybe_single()` miss comes back as `_NoRow` rather than `None` — see
     that class for why.

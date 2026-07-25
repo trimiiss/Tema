@@ -1,11 +1,26 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.api import patients, appointments, documents, reports, agents, users, staff
+from app.core import tasks
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
+    # Agent runs and document processing are fired off in the background; give
+    # them a moment to finish so the process can exit cleanly. Without this the
+    # worker never shuts down while a run is in flight, which is what made
+    # `uvicorn --reload` hang and keep serving stale code.
+    await tasks.drain()
+
 
 app = FastAPI(
     title="Clinic Multi-Agent System",
     description="Administrative multi-agent prototype for diploma thesis",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(

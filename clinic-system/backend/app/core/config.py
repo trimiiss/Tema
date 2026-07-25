@@ -1,4 +1,9 @@
+from pathlib import Path
+
 from pydantic_settings import BaseSettings
+
+# backend/ — this file is backend/app/core/config.py
+BACKEND_ROOT = Path(__file__).resolve().parents[2]
 
 
 class Settings(BaseSettings):
@@ -15,6 +20,12 @@ class Settings(BaseSettings):
     # standalone zone carrying exactly the offsets and EU DST rules Kosovo
     # observes (CET/CEST, UTC+1 winter / UTC+2 summer).
     clinic_timezone: str = "Europe/Tirane"
+    # Where uploaded documents are written. A relative path resolves against the
+    # backend package root (see `upload_path`), which is `/app` in the container
+    # because compose mounts `./backend` there, and `backend/` when running
+    # uvicorn locally — so this default is correct in both. It used to be the
+    # absolute `/app/uploads`, which on Windows silently became `C:\app\uploads`.
+    upload_dir: str = "uploads"
     # Fallback working hours, used when a doctor has no `schedules` rows at all.
     # Once a doctor has any row, only their own rows apply. 0=Mon … 6=Sun.
     default_work_days: str = "0,1,2,3,4"
@@ -27,3 +38,9 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def upload_path() -> Path:
+    """Absolute directory for uploaded documents."""
+    configured = Path(settings.upload_dir)
+    return configured if configured.is_absolute() else BACKEND_ROOT / configured

@@ -6,6 +6,7 @@ from app.core.auth import require_roles
 from app.core.database import get_db, execute_with_retry
 from app.core.audit import log_action
 from app.core.events import subscribe, unsubscribe, publish
+from app.core.tasks import spawn
 from app.models.schemas import AgentRunRequest, AgentRunOut, ApprovalDecision
 
 router = APIRouter(prefix="/agent", tags=["agents"])
@@ -30,9 +31,8 @@ async def start_agent_run(
 
     run_id = run["id"]
 
-    import asyncio
     from app.agents.orchestrator import run_orchestrator
-    asyncio.create_task(run_orchestrator(run_id, body.input_text, user["id"]))
+    spawn(run_orchestrator(run_id, body.input_text, user["id"]), name=f"agent-run:{run_id}")
 
     return {**run, "steps": [], "gates": []}
 
@@ -136,6 +136,7 @@ async def decide_gate(
 
     # Resume the LangGraph run
     from app.agents.orchestrator import resume_orchestrator
-    asyncio.create_task(resume_orchestrator(gate.data["run_id"], gate_id, body.decision, user["id"]))
+    spawn(resume_orchestrator(gate.data["run_id"], gate_id, body.decision, user["id"]),
+          name=f"gate-resume:{gate_id}")
 
     return {"gate_id": gate_id, "decision": body.decision}

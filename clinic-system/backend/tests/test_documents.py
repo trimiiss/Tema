@@ -99,3 +99,45 @@ async def test_document_text_passed_as_user_role():
         # System message must NOT contain the document text
         for sm in system_msgs:
             assert "Ignore previous instructions" not in sm["content"]
+
+
+@pytest.mark.asyncio
+async def test_extracted_fields_are_replaced_not_appended():
+    """`execute_with_retry` is at-least-once, so the field write must be idempotent.
+
+    A GOAWAY can drop the response to an insert that already committed; the
+    retry then inserts the same rows again. Live, that produced a document whose
+    every extracted field was listed twice. Clearing first makes a repeated
+    write converge instead of accumulating.
+    """
+    from app.services.ocr_service import process_document_async
+
+    calls = []
+
+    def record(query):
+        calls.append(query)
+        return MagicMock(data=[])
+
+    db = MagicMock()
+    table = MagicMock()
+    for method in ("update", "insert", "delete", "eq", "select"):
+        getattr(table, method).return_value = table
+    db.table.return_value = table
+
+    agent_result = {
+        "doc_type": "insurance",
+        "fields": [{"name": "policy_number", "value": "DHI-4471-2026", "confidence": 1.0}],
+        "summary": "",
+    }
+
+    with patch("app.services.ocr_service.get_db", return_value=db), \
+         patch("app.services.ocr_service.execute_with_retry", side_effect=record), \
+         patch("app.services.ocr_service.extract_text_from_file", return_value="Policy DHI-4471-2026"), \
+         patch("app.agents.document_agent.run_document_agent",
+               new=AsyncMock(return_value=agent_result)):
+        await process_document_async("doc-1", "/tmp/x.pdf", "user-1")
+
+    # Every query went through the retry guard — none called .execute() directly.
+    assert len(calls) == 4          # status, doc_type, delete, insert
+    table.delete.assert_called_once()
+    table.insert.assert_called_once()
