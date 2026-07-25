@@ -89,3 +89,16 @@ CET/CEST offsets and EU DST rules). Set it in `.env` if the clinic runs elsewher
 - Document text is always passed as `user` role to GPT-4o — never as `system` (injection prevention)
 - Every write action goes through an approval gate before execution
 - All actions are recorded in `audit_logs` table
+
+3. Two pending gates are already waiting in agent chat from my earlier runs (Fjolla 11:30, Leutrim 12:00 on Mon 27 July).
+
+Am I done? Mostly — two honest caveats
+
+I have to correct something I told you. I said the duplicated document fields were caused by execute_with_retry re-sending the insert. The evidence contradicts that: no retry or exception appears in the log, tand the agent returns 4 fieldsconsistently across repeated runs. So the delete-then-insert change I made is a reasonable idempotency guard, but it is not a verified fix for what I actually saw, and I stopped before
+finding the real cause. The refws correctly; only the insurance one duplicated, twice.
+
+The --reload hang is also not fking was worth doing on its own — it immediately surfaced a genuine silent failure — but I tested it and reload still hangs. uvicorn never logs Shutting down at all, so the cause is in its Windows reloader, not in the app. The backend is running witmanually after backend edits.
+
+Everything else is verified: 18 path works live, thesearch_patients fix is confirmed, and uploads now land in backend/uploads/.
+
+Want me to keep digging on the ?
