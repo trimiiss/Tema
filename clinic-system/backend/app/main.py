@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api import patients, appointments, documents, reports, agents, users
+from app.api import patients, appointments, documents, reports, agents, users, staff
 
 app = FastAPI(
     title="Clinic Multi-Agent System",
@@ -22,6 +22,8 @@ app.include_router(documents.router)
 app.include_router(reports.router)
 app.include_router(agents.router)
 app.include_router(users.router)
+app.include_router(staff.router)
+app.include_router(staff.services_router)
 
 
 @app.get("/health")

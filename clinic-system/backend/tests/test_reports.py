@@ -11,13 +11,12 @@ from app.services.report_service import (
 )
 
 
+from tests.conftest import make_chain
+
+
 def _make_db(data):
     db = MagicMock()
-    chain = MagicMock()
-    chain.execute.return_value = MagicMock(data=data)
-    for m in ("select","eq","in_","gte","lte","not_","order","execute"):
-        getattr(chain, m).return_value = chain
-    db.table.return_value = chain
+    db.table.return_value = make_chain(data)
     return db
 
 
@@ -59,16 +58,8 @@ def test_missing_documents_report_identifies_gaps():
     ]
 
     mock_db = MagicMock()
-    patient_chain = MagicMock()
-    patient_chain.execute.return_value = MagicMock(data=patients)
-    for m in ("select","execute"):
-        getattr(patient_chain, m).return_value = patient_chain
-
-    doc_chain = MagicMock()
-    doc_chain.execute.return_value = MagicMock(data=docs)
-    for m in ("select","execute"):
-        getattr(doc_chain, m).return_value = doc_chain
-
+    patient_chain = make_chain(patients)
+    doc_chain = make_chain(docs)
     mock_db.table.side_effect = lambda t: patient_chain if t == "patients" else doc_chain
 
     with patch("app.services.report_service.get_db", return_value=mock_db):

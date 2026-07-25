@@ -18,7 +18,9 @@ pytest tests/ -v                        # full suite (30+ tests)
 pytest tests/test_appointments.py -v    # single file
 pytest tests/test_approval_gates.py -k test_gate_cannot_be_decided_twice -v  # single test
 ```
-Tests run fully mocked (`tests/conftest.py` patches `app.core.database.get_db` / `app.core.auth.get_db` with a chainable `MagicMock`) — no live Supabase connection or `.env` needed to run the suite; dummy env vars are set via `os.environ.setdefault` at import time.
+Tests run fully mocked — no live Supabase connection or `.env` needed to run the suite; dummy env vars are set via `os.environ.setdefault` at import time. `tests/conftest.py` exposes two shared helpers that all test modules should use:
+- `patch_db(mock_db)` — a context manager that patches `app.core.database.create_client`, **not** `get_db`. Routers do `from app.core.database import get_db`, which binds the name at import time, so patching `database.get_db` leaves those bindings pointing at the real function. The patch must stay open while the request runs, so helpers that build a `TestClient` are context managers (`with make_client(...) as c:`), never plain functions that return a client from inside a `with` block.
+- `make_chain(data)` — a chainable postgrest query mock whose `.execute()` returns `data`. Pass a **dict** when the query under test ends in `.maybe_single()` and a **list** otherwise; mock rows must include every column the response model declares. Note `.not_` is a property (`.not_.in_(...)`), so it resolves back to the chain rather than being a call.
 
 ### Frontend (Next.js)
 ```bash
@@ -58,6 +60,15 @@ Uploaded document text is always passed to GPT-4o as **user**-role content, neve
 ### Scenario-driven test suite
 `backend/tests/scenarios.json` holds 20 scenario fixtures (id, input, expected_intent/sub_intent, `requires_approval`, expected_outcome, optional `security_note`). `test_scenarios.py` asserts structural invariants across all of them (every write scenario requires approval, every read/report scenario doesn't, at least one scenario each for prompt-injection, medical-advice-blocking, unauthorized-access, and conflict-detection). When adding a new agent behavior, add a corresponding scenario entry rather than only unit-testing the code path.
 
+### Staff administration & manual booking (`backend/app/api/staff.py`)
+Two paths write appointments, and they are deliberately different:
+- **Agent path** (`POST /agent/run`) — proposes, opens an approval gate, executes only on approval. See above.
+- **Manual path** (`POST /appointments/`, used by the "New Appointment" form) — admins and receptionists write directly, no gate. The gate guards writes an *agent* proposed on a user's behalf; a human filling in a form is already the human in the loop. `tests/test_staff.py::test_receptionist_can_book_appointment_manually` asserts no `approval_gates` row is touched here.
+
+`POST /staff/` is admin-only and is the one place accounts are provisioned. Given `email` + `password` it creates a Supabase Auth user via `db.auth.admin.create_user` and grants the role by inserting into `user_roles` (role id looked up by name, never hardcoded). `role: "doctor"` additionally inserts a `staff` row — doctors are the bookable resource appointments reference — plus `schedules` rows from `work_days`/`start_time`/`end_time`. `role: "receptionist"` creates the login only; receptionists are not bookable so they get no `staff` row, which is why the Staff page lists them under "Login accounts" (`GET /staff/accounts`) rather than in the staff table.
+
+Staff deletion is a soft delete (`active = false`) because `appointments.staff_id` references them. A doctor with no `schedules` rows produces zero available slots — the booking form surfaces this rather than failing silently.
+
 ### Auth & roles (`backend/app/core/auth.py`)
 JWTs are Supabase-issued and verified locally against `SUPABASE_JWT_SECRET` (HS256, `verify_aud` disabled). Roles are looked up per-request from the `user_roles`/`roles` tables (not embedded in the JWT). Endpoints declare required roles via `require_roles("admin", "receptionist")` as a FastAPI dependency — there are three roles: `admin`, `receptionist`, `doctor`. All Supabase access from the backend uses the **service-role** key (`app/core/database.py`), so authorization is enforced entirely in the FastAPI layer, not via Postgres RLS from these endpoints.
 
@@ -68,4 +79,4 @@ JWTs are Supabase-issued and verified locally against `SUPABASE_JWT_SECRET` (HS2
 Fully deterministic — no LLM involved. Produces appointment summaries, no-show reports, and missing-document reports, rendered to PDF (`reportlab`) or CSV. Reachable both via chat (`report` intent → `node_report`) and directly via `POST /reports/generate`.
 
 ### Frontend structure
-Next.js App Router pages under `frontend/src/app/` map roughly 1:1 to backend routers: `dashboard`, `patients`, `appointments`, `documents`, `reports`, `agent-chat`, plus `(auth)/login` and `(auth)/register` route group. All backend calls go through typed wrapper objects in `frontend/src/lib/api.ts` (`patientsApi`, `appointmentsApi`, `documentsApi`, `reportsApi`, `agentApi`) which attach the Supabase session's access token as a Bearer header via `src/lib/supabase.ts` (`createBrowserClient`). Add new backend calls there rather than calling `fetch` ad hoc from components.
+Next.js App Router pages under `frontend/src/app/` map roughly 1:1 to backend routers: `dashboard`, `patients`, `appointments`, `documents`, `reports`, `agent-chat`, `staff` (admin-only), plus `login`. All backend calls go through typed wrapper objects in `frontend/src/lib/api.ts` (`patientsApi`, `appointmentsApi`, `staffApi`, `servicesApi`, `documentsApi`, `reportsApi`, `agentApi`) which attach the Supabase session's access token as a Bearer header via `src/lib/supabase.ts` (`createBrowserClient`). Add new backend calls there rather than calling `fetch` ad hoc from components.

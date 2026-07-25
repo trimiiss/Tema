@@ -1,26 +1,29 @@
 """Tests for authentication and authorization."""
 import pytest
+from contextlib import contextmanager
 from fastapi.testclient import TestClient
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock
 from app.main import app
-from app.core import database, auth
+from tests.conftest import make_chain, patch_db
 
 
-def make_client(token: str, role_name: str | None) -> TestClient:
+@contextmanager
+def make_client(token: str, role_name: str | None):
+    """Client authenticated as `token`, resolving to a single role (or none).
+
+    A context manager because the DB patch has to stay open while the request
+    runs — returning the client from inside a `with` block would deactivate it.
+    """
+    role_rows = [{"roles": {"name": role_name}}] if role_name else []
     mock_db = MagicMock()
-    chain = MagicMock()
-    chain.execute.return_value = MagicMock(
-        data=[{"roles": {"name": role_name}}] if role_name else []
+    # Only the role lookup returns rows; every other table is empty.
+    mock_db.table.side_effect = lambda name: make_chain(
+        role_rows if name == "user_roles" else []
     )
-    for m in ("select","eq","maybe_single","order","limit","not_","in_","or_"):
-        getattr(chain, m).return_value = chain
-    mock_db.table.return_value = chain
-
-    with patch.object(database, "get_db", return_value=mock_db), \
-         patch.object(auth, "get_db", return_value=mock_db):
+    with patch_db(mock_db):
         c = TestClient(app)
         c.headers.update({"Authorization": f"Bearer {token}"})
-        return c
+        yield c
 
 
 def test_missing_token_returns_403():
@@ -36,34 +39,31 @@ def test_invalid_token_returns_401():
 
 
 def test_admin_can_access_patients(admin_token):
-    c = make_client(admin_token, "admin")
-    r = c.get("/patients/")
-    assert r.status_code == 200
+    with make_client(admin_token, "admin") as c:
+        assert c.get("/patients/").status_code == 200
 
 
 def test_receptionist_can_access_patients(receptionist_token):
-    c = make_client(receptionist_token, "receptionist")
-    r = c.get("/patients/")
-    assert r.status_code == 200
+    with make_client(receptionist_token, "receptionist") as c:
+        assert c.get("/patients/").status_code == 200
 
 
 def test_no_role_cannot_access_patients(no_role_token):
-    c = make_client(no_role_token, None)
-    r = c.get("/patients/")
-    assert r.status_code == 403
+    with make_client(no_role_token, None) as c:
+        assert c.get("/patients/").status_code == 403
 
 
 def test_no_role_cannot_create_patient(no_role_token):
-    c = make_client(no_role_token, None)
-    r = c.post("/patients/", json={"code": "P099", "first_name": "Test", "last_name": "User"})
-    assert r.status_code == 403
+    with make_client(no_role_token, None) as c:
+        r = c.post("/patients/", json={"code": "P099", "first_name": "Test", "last_name": "User"})
+        assert r.status_code == 403
 
 
 def test_doctor_cannot_create_patient(admin_token):
     """Doctors are read-only for patients."""
-    c = make_client(admin_token, "doctor")
-    r = c.post("/patients/", json={"code": "P099", "first_name": "Test", "last_name": "User"})
-    assert r.status_code == 403
+    with make_client(admin_token, "doctor") as c:
+        r = c.post("/patients/", json={"code": "P099", "first_name": "Test", "last_name": "User"})
+        assert r.status_code == 403
 
 
 def test_health_endpoint_is_public():

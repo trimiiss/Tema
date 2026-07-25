@@ -4,6 +4,7 @@ import AppLayout from "@/components/layout/AppLayout";
 import { appointmentsApi, usersApi } from "@/lib/api";
 import { format, addDays, subDays } from "date-fns";
 import toast from "react-hot-toast";
+import NewAppointmentModal from "./NewAppointmentModal";
 
 const STATUS_COLORS: Record<string, string> = {
   proposed:  "bg-yellow-100 text-yellow-700",
@@ -24,6 +25,7 @@ export default function AppointmentsPage() {
   const [dateTo, setDateTo] = useState(format(addDays(new Date(), 30), "yyyy-MM-dd"));
   const [statusFilter, setStatusFilter] = useState("");
   const [roles, setRoles] = useState<string[]>([]);
+  const [showNew, setShowNew] = useState(false);
   const canManage = roles.some(r => r === "admin" || r === "receptionist");
 
   useEffect(() => {
@@ -60,7 +62,19 @@ export default function AppointmentsPage() {
       <div className="space-y-6">
         <div className="flex items-center justify-between">
           <h1 className="text-2xl font-bold text-gray-900">Appointments</h1>
+          {canManage && (
+            <button
+              onClick={() => setShowNew(true)}
+              className="px-4 py-2.5 bg-primary-600 text-white rounded-lg text-sm font-medium hover:bg-primary-700 transition"
+            >
+              + New Appointment
+            </button>
+          )}
         </div>
+
+        {showNew && (
+          <NewAppointmentModal onClose={() => setShowNew(false)} onCreated={load} />
+        )}
 
         {/* Filters */}
         <div className="bg-white rounded-xl border border-gray-200 p-4 flex flex-wrap gap-4 items-end">

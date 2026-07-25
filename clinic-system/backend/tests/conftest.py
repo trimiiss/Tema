@@ -1,9 +1,14 @@
-"""
-Shared test fixtures. Tests run against the real Supabase instance
-using SERVICE_ROLE key, so no mocking — per thesis requirement.
+"""Shared test fixtures.
+
+The suite is fully mocked — no live Supabase connection or `.env` is needed.
+Mocking happens at the `create_client` boundary rather than on `get_db`:
+routers do `from app.core.database import get_db`, which binds the name at
+import time, so patching `database.get_db` would leave those bindings pointing
+at the real function.
 """
 import os
 import pytest
+from contextlib import contextmanager
 from fastapi.testclient import TestClient
 from unittest.mock import MagicMock, patch
 
@@ -16,20 +21,37 @@ os.environ.setdefault("SUPABASE_JWT_SECRET", "test-jwt-secret-32chars-minimum!!"
 os.environ.setdefault("SECRET_KEY", "test-secret")
 
 
+@contextmanager
+def patch_db(mock_db):
+    """Make every `get_db()` call in the app return `mock_db`.
+
+    Must stay open for the duration of the request under test.
+    """
+    from app.core import database
+    with patch.object(database, "create_client", return_value=mock_db):
+        yield mock_db
+
+
+def make_chain(data):
+    """A chainable postgrest query mock whose `.execute()` returns `data`."""
+    chain = MagicMock()
+    chain.execute.return_value = MagicMock(data=data)
+    for method in ("select", "insert", "update", "delete", "upsert", "eq", "neq",
+                   "gte", "lte", "lt", "gt", "ilike", "like", "or_", "in_",
+                   "is_", "order", "limit", "range", "single", "maybe_single"):
+        getattr(chain, method).return_value = chain
+    # `.not_` is a property, not a call: postgrest spells negation
+    # `.not_.in_(...)`, so it has to resolve back to the chain itself.
+    chain.not_ = chain
+    return chain
+
+
 @pytest.fixture
 def mock_db():
     """Returns a mock Supabase client with chainable query methods."""
-    def _make_chain(data):
-        chain = MagicMock()
-        chain.execute.return_value = MagicMock(data=data)
-        for method in ("select","insert","update","delete","eq","neq","gte","lte","lt","gt",
-                       "ilike","or_","in_","not_","order","limit","maybe_single"):
-            getattr(chain, method).return_value = chain
-        return chain
-
     db = MagicMock()
-    db._chain_factory = _make_chain
-    db.table.side_effect = lambda name: _make_chain([])
+    db._chain_factory = make_chain
+    db.table.side_effect = lambda name: make_chain([])
     return db
 
 
@@ -67,9 +89,7 @@ def no_role_token():
 @pytest.fixture
 def client(mock_db, admin_token):
     from app.main import app
-    from app.core import database, auth
-    with patch.object(database, "get_db", return_value=mock_db), \
-         patch.object(auth, "get_db", return_value=mock_db):
+    with patch_db(mock_db):
         # Make mock_db.table return chain with admin role
         def table_side_effect(name):
             chain = mock_db._chain_factory([{"roles": {"name": "admin"}}])

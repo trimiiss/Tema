@@ -6,6 +6,9 @@
 3. Create a test user: Authentication → Users → Invite (e.g. admin@clinic.demo)
 4. Assign role: SQL Editor → `INSERT INTO user_roles (user_id, role_id) VALUES ('your-user-uuid', 1);`
 
+This SQL step bootstraps the **first admin only**. Once that admin can sign in, every
+further doctor and receptionist is created from the **Staff** page in the UI — no more SQL.
+
 ## 2. Environment Variables
 ```bash
 cp .env.example .env
@@ -26,9 +29,24 @@ cd backend
 pip install -r requirements.txt
 pytest tests/ -v
 ```
-Expected: 30+ tests passing.
+Expected: 96 tests passing.
 
-## 5. Three Demo Workflows
+## 5. Demo Workflows
+
+### Workflow 0 — Staff setup and manual booking (no LLM involved)
+**As admin:**
+1. Go to **Staff** → **+ Add Staff**
+2. Pick **Doctor**, enter a name and specialty, tick the working days and hours, and
+   optionally give an email + password to create a login for them
+3. Repeat with **Receptionist** — receptionists always need an email + password, since
+   the account *is* the record. They appear under *Login accounts*, not in the staff table.
+
+**As admin or receptionist:**
+4. Go to **Appointments** → **+ New Appointment**
+5. Pick a patient and doctor — the slot picker fills with that doctor's open times,
+   derived from the working hours set in step 2 (a doctor with no working hours shows none)
+6. Pick a slot and book. This writes directly, with no approval gate: a human filling in
+   a form is already the human in the loop. Double-booking is rejected with a 409.
 
 ### Workflow 1 — Appointment Request
 1. Go to Agent Chat
@@ -50,6 +68,7 @@ Expected: 30+ tests passing.
 
 ## Architecture Notes
 - Business rules (conflict detection, status transitions) = deterministic Python, zero LLM
+- Staff/account provisioning is admin-only; manual booking is admin + receptionist; doctors are read-only
 - LLM (GPT-4o) is used only for: intent classification, document classification, field extraction, summarization
 - Document text is always passed as `user` role to GPT-4o — never as `system` (injection prevention)
 - Every write action goes through an approval gate before execution

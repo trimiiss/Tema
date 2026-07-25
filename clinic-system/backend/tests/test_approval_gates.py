@@ -71,27 +71,21 @@ async def test_gate_cannot_be_decided_twice():
     gate = MagicMock()
     gate.data = {"id": "g1", "status": "approved", "run_id": "r1", "payload": {}}
 
+    from tests.conftest import make_chain, patch_db
+
     mock_db = MagicMock()
-    chain = MagicMock()
+    chain = make_chain(None)
     chain.execute.return_value = gate
-    for m in ("select","eq","maybe_single"):
-        getattr(chain, m).return_value = chain
-    mock_db.table.return_value = chain
 
     from fastapi.testclient import TestClient
     from app.main import app
-    from app.core import database, auth
     from jose import jwt
     token = jwt.encode({"sub": "u1", "email": "a@b.com"}, "test-jwt-secret-32chars-minimum!!", "HS256")
 
-    role_chain = MagicMock()
-    role_chain.execute.return_value = MagicMock(data=[{"roles": {"name": "admin"}}])
-    for m in ("select","eq","maybe_single","update"):
-        getattr(role_chain, m).return_value = role_chain
+    role_chain = make_chain([{"roles": {"name": "admin"}}])
     mock_db.table.side_effect = lambda t: role_chain if t == "user_roles" else chain
 
-    with patch.object(database, "get_db", return_value=mock_db), \
-         patch.object(auth, "get_db", return_value=mock_db):
+    with patch_db(mock_db):
         c = TestClient(app)
         r = c.post(f"/agent/approve/g1",
                    json={"decision": "approved"},

@@ -22,8 +22,15 @@ async function request<T>(
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(err.detail ?? "Request failed");
+    const detail = err.detail;
+    // FastAPI validation errors come back as a list of {loc, msg, type}.
+    throw new Error(
+      Array.isArray(detail)
+        ? detail.map((d: any) => d.msg).join(", ")
+        : typeof detail === "string" ? detail : "Request failed"
+    );
   }
+  if (res.status === 204) return undefined as T;
   return res.json();
 }
 
@@ -54,6 +61,28 @@ export const appointmentsApi = {
   update: (id: string, body: any) =>
     request<any>(`/appointments/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   cancel: (id: string) => request<void>(`/appointments/${id}`, { method: "DELETE" }),
+};
+
+// ---- Staff ----
+export const staffApi = {
+  list: (includeInactive = false) =>
+    request<any[]>(`/staff/?include_inactive=${includeInactive}`),
+  accounts: () =>
+    request<{ id: string; email: string; full_name: string | null; roles: string[] }[]>(
+      "/staff/accounts"
+    ),
+  create: (body: any) => request<any>("/staff/", { method: "POST", body: JSON.stringify(body) }),
+  update: (id: string, body: any) =>
+    request<any>(`/staff/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deactivate: (id: string) => request<void>(`/staff/${id}`, { method: "DELETE" }),
+  schedules: (id: string) => request<any[]>(`/staff/${id}/schedules`),
+  setSchedules: (id: string, entries: any[]) =>
+    request<any[]>(`/staff/${id}/schedules`, { method: "PUT", body: JSON.stringify(entries) }),
+};
+
+// ---- Services ----
+export const servicesApi = {
+  list: () => request<any[]>("/services/"),
 };
 
 // ---- Documents ----

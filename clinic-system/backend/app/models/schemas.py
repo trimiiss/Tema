@@ -74,6 +74,56 @@ class AppointmentOut(BaseModel):
     service_name: Optional[str] = None
 
 
+# ---- Staff ----
+class StaffCreate(BaseModel):
+    full_name: str
+    role: str = "doctor"            # "doctor" | "receptionist"
+    specialty: Optional[str] = None
+    bio: Optional[str] = None
+    # Optional login account — when both are given a Supabase Auth user is
+    # created and the role is assigned via user_roles.
+    email: Optional[str] = None
+    password: Optional[str] = None
+    # Weekly working hours, only meaningful for doctors (0=Mon … 6=Sun).
+    work_days: List[int] = []
+    start_time: Optional[time] = None
+    end_time: Optional[time] = None
+
+
+class StaffUpdate(BaseModel):
+    full_name: Optional[str] = None
+    specialty: Optional[str] = None
+    bio: Optional[str] = None
+    active: Optional[bool] = None
+
+
+class StaffOut(BaseModel):
+    id: str
+    user_id: Optional[str] = None
+    full_name: str
+    specialty: Optional[str] = None
+    bio: Optional[str] = None
+    active: Optional[bool] = True
+
+
+class ScheduleEntry(BaseModel):
+    weekday: int
+    start_time: time
+    end_time: time
+
+
+class ScheduleOut(ScheduleEntry):
+    id: str
+    staff_id: str
+
+
+class ServiceOut(BaseModel):
+    id: str
+    name: str
+    duration_minutes: int
+    description: Optional[str] = None
+
+
 # ---- Documents ----
 class DocumentOut(BaseModel):
     id: str

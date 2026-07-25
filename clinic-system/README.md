@@ -14,9 +14,14 @@ human-in-the-loop approval gate for every write operation.
 
 ## Key design principles
 
-- **Approval gates**: any write (create/cancel/reschedule appointment, create/update patient) is
-  proposed by an agent, stored as a pending `approval_gates` row, and only executed after a human
-  approves it via the UI. Reads and reports execute immediately.
+- **Approval gates**: any write *an agent proposes* (create/cancel/reschedule appointment,
+  create/update patient) is stored as a pending `approval_gates` row and only executed after a
+  human approves it via the UI. Reads and reports execute immediately. Writes a human performs
+  directly through a form — manual booking, staff creation — are not gated: the human is already
+  in the loop.
+- **Role-scoped administration**: admins create doctors and receptionist accounts from the Staff
+  page (which provisions the Supabase Auth login and assigns the role); admins and receptionists
+  book appointments manually against a doctor's working hours; doctors are read-only.
 - **Deterministic business logic**: conflict detection, status transitions, and reporting are plain
   Python — zero LLM involvement.
 - **Injection-safe document intake**: OCR'd document text is always sent to GPT-4o as `user`-role
@@ -37,7 +42,7 @@ clinic-system/
 │       ├── models/     Pydantic schemas
 │       └── services/   OCR, scheduling, PDF/CSV report generation
 ├── frontend/            Next.js App Router UI
-│   └── src/app/         dashboard, patients, appointments, documents, reports, agent-chat, login
+│   └── src/app/         dashboard, patients, appointments, staff, documents, reports, agent-chat, login
 ├── supabase/
 │   └── migrations/       schema + seed SQL
 └── docker-compose.yml
@@ -53,8 +58,9 @@ docker compose up --build
 - Frontend: http://localhost:3000
 - Backend API docs: http://localhost:8000/docs
 
-For first-time Supabase project setup, environment variables, and a walkthrough of the three demo
-workflows (appointment request, document intake, weekly report), see [SETUP.md](./SETUP.md).
+For first-time Supabase project setup, environment variables, and a walkthrough of the demo
+workflows (staff setup + manual booking, agent appointment request, document intake, weekly
+report), see [SETUP.md](./SETUP.md).
 
 ## Development
 

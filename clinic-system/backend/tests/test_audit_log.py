@@ -56,27 +56,23 @@ def test_patient_create_audit_logged():
     """Patient creation via API must produce audit log entry."""
     from fastapi.testclient import TestClient
     from app.main import app
-    from app.core import database, auth
     from jose import jwt
+    from tests.conftest import make_chain, patch_db
 
     token = jwt.encode({"sub": "u1", "email": "a@b.com"}, "test-jwt-secret-32chars-minimum!!", "HS256")
 
     mock_db = MagicMock()
-    patient_data = {"id": "p-new", "code": "P099", "first_name": "Test", "last_name": "User"}
-
-    def table_side(name):
-        chain = MagicMock()
-        if name == "user_roles":
-            chain.execute.return_value = MagicMock(data=[{"roles": {"name": "admin"}}])
-        elif name == "patients":
-            chain.execute.return_value = MagicMock(data=[patient_data])
-        else:
-            chain.execute.return_value = MagicMock(data=[{}])
-        for m in ("select","insert","update","delete","eq","maybe_single","order","limit","not_","in_","or_"):
-            getattr(chain, m).return_value = chain
-        return chain
-
-    mock_db.table.side_effect = table_side
+    # A real row always carries every column, so the fixture must too.
+    patient_data = {
+        "id": "p-new", "code": "P099", "first_name": "Test", "last_name": "User",
+        "dob": None, "gender": None, "phone": None, "email": None,
+        "address": None, "notes": None, "created_at": None,
+    }
+    rows = {
+        "user_roles": [{"roles": {"name": "admin"}}],
+        "patients": [patient_data],
+    }
+    mock_db.table.side_effect = lambda name: make_chain(rows.get(name, [{}]))
 
     audit_calls = []
     original_log = log_action
@@ -84,8 +80,7 @@ def test_patient_create_audit_logged():
         audit_calls.append(args)
         return original_log.__wrapped__(*args, **kwargs) if hasattr(original_log, "__wrapped__") else None
 
-    with patch.object(database, "get_db", return_value=mock_db), \
-         patch.object(auth, "get_db", return_value=mock_db), \
+    with patch_db(mock_db), \
          patch("app.api.patients.log_action", side_effect=capture_log):
         c = TestClient(app)
         r = c.post("/patients/",

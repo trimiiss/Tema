@@ -9,19 +9,20 @@ from app.agents.patient_agent import (
 )
 
 
+from tests.conftest import make_chain
+
+
 def _make_db(data):
+    """`data` must match what the query returns: a dict for `.maybe_single()`
+    lookups, a list for plain selects."""
     db = MagicMock()
-    chain = MagicMock()
-    chain.execute.return_value = MagicMock(data=data)
-    for m in ("select","eq","or_","limit","maybe_single","insert","update"):
-        getattr(chain, m).return_value = chain
-    db.table.return_value = chain
+    db.table.return_value = make_chain(data)
     return db
 
 
 def test_get_patient_found():
     patient = {"id": "p1", "code": "P001", "first_name": "Alban", "last_name": "Krasniqi"}
-    db = _make_db([patient])
+    db = _make_db(patient)
     with patch("app.agents.patient_agent.get_db", return_value=db):
         result = tool_get_patient("P001")
     assert result["found"] is True
@@ -29,7 +30,7 @@ def test_get_patient_found():
 
 
 def test_get_patient_not_found():
-    db = _make_db([])
+    db = _make_db(None)
     with patch("app.agents.patient_agent.get_db", return_value=db):
         result = tool_get_patient("P999")
     assert result["found"] is False
@@ -59,7 +60,7 @@ def test_flag_missing_fields_complete_patient():
         "phone": "+383-44-100001", "email": "alban@demo.test",
         "address": "Prishtina",
     }
-    db = _make_db([full])
+    db = _make_db(full)
     with patch("app.agents.patient_agent.get_db", return_value=db):
         result = tool_flag_missing_fields("p1")
     assert result["missing_fields"] == []
@@ -68,7 +69,7 @@ def test_flag_missing_fields_complete_patient():
 
 def test_flag_missing_fields_partial_patient():
     partial = {"id": "p5", "first_name": "Besnik", "last_name": "Ahmeti"}
-    db = _make_db([partial])
+    db = _make_db(partial)
     with patch("app.agents.patient_agent.get_db", return_value=db):
         result = tool_flag_missing_fields("p5")
     assert "dob" in result["missing_fields"]
@@ -77,7 +78,7 @@ def test_flag_missing_fields_partial_patient():
 
 
 def test_flag_missing_fields_patient_not_found():
-    db = _make_db([])
+    db = _make_db(None)
     with patch("app.agents.patient_agent.get_db", return_value=db):
         result = tool_flag_missing_fields("nonexistent")
     assert "error" in result

@@ -3,17 +3,19 @@ import pytest
 from datetime import datetime, timedelta
 from unittest.mock import patch, MagicMock
 from app.services.schedule_service import check_conflict, get_available_slots
+from tests.conftest import make_chain
+
+
+def _make_db(data):
+    db = MagicMock()
+    db.table.return_value = make_chain(data)
+    return db
 
 
 # ---- Conflict detection (unit, no DB) ----
 
 def test_check_conflict_returns_none_when_no_conflict():
-    mock_db = MagicMock()
-    chain = MagicMock()
-    chain.execute.return_value = MagicMock(data=[])
-    for m in ("select","eq","not_","in_","gte","lt"):
-        getattr(chain, m).return_value = chain
-    mock_db.table.return_value = chain
+    mock_db = _make_db([])
 
     with patch("app.services.schedule_service.get_db", return_value=mock_db):
         dt = datetime(2026, 7, 24, 10, 0)
@@ -23,12 +25,7 @@ def test_check_conflict_returns_none_when_no_conflict():
 
 def test_check_conflict_returns_conflicting_appointment():
     existing = {"id": "appt-001", "scheduled_at": "2026-07-24T10:00:00", "duration_min": 30}
-    mock_db = MagicMock()
-    chain = MagicMock()
-    chain.execute.return_value = MagicMock(data=[existing])
-    for m in ("select","eq","not_","in_","gte","lt"):
-        getattr(chain, m).return_value = chain
-    mock_db.table.return_value = chain
+    mock_db = _make_db([existing])
 
     with patch("app.services.schedule_service.get_db", return_value=mock_db):
         dt = datetime(2026, 7, 24, 10, 0)
@@ -37,12 +34,7 @@ def test_check_conflict_returns_conflicting_appointment():
 
 
 def test_check_conflict_different_time_no_conflict():
-    mock_db = MagicMock()
-    chain = MagicMock()
-    chain.execute.return_value = MagicMock(data=[])
-    for m in ("select","eq","not_","in_","gte","lt"):
-        getattr(chain, m).return_value = chain
-    mock_db.table.return_value = chain
+    mock_db = _make_db([])
 
     with patch("app.services.schedule_service.get_db", return_value=mock_db):
         dt = datetime(2026, 7, 24, 14, 0)  # 4 hours later
@@ -53,12 +45,7 @@ def test_check_conflict_different_time_no_conflict():
 # ---- Available slots ----
 
 def test_available_slots_returns_empty_for_no_schedule():
-    mock_db = MagicMock()
-    chain = MagicMock()
-    chain.execute.return_value = MagicMock(data=[])
-    for m in ("select","eq","gte","lt","not_","in_"):
-        getattr(chain, m).return_value = chain
-    mock_db.table.return_value = chain
+    mock_db = _make_db([])
 
     with patch("app.services.schedule_service.get_db", return_value=mock_db):
         dt = datetime(2026, 7, 24)
@@ -69,19 +56,9 @@ def test_available_slots_returns_empty_for_no_schedule():
 def test_available_slots_returns_slots_within_schedule():
     sched = [{"staff_id": "s1", "weekday": 3, "start_time": "08:00", "end_time": "10:00"}]
     mock_db = MagicMock()
-    sched_chain = MagicMock()
-    sched_chain.execute.return_value = MagicMock(data=sched)
-    appt_chain = MagicMock()
-    appt_chain.execute.return_value = MagicMock(data=[])
-    for m in ("select","eq","gte","lt","not_","in_"):
-        getattr(sched_chain, m).return_value = sched_chain
-        getattr(appt_chain, m).return_value = appt_chain
-
-    call_count = [0]
-    def table_side(name):
-        if name == "schedules": return sched_chain
-        return appt_chain
-    mock_db.table.side_effect = table_side
+    sched_chain = make_chain(sched)
+    appt_chain = make_chain([])
+    mock_db.table.side_effect = lambda name: sched_chain if name == "schedules" else appt_chain
 
     with patch("app.services.schedule_service.get_db", return_value=mock_db):
         dt = datetime(2026, 7, 23)  # Thursday
@@ -118,12 +95,7 @@ def test_status_transition(from_status, to_status, should_pass):
 
 def test_double_booking_detected():
     existing = {"id": "appt-existing"}
-    mock_db = MagicMock()
-    chain = MagicMock()
-    chain.execute.return_value = MagicMock(data=[existing])
-    for m in ("select","eq","not_","in_","gte","lt"):
-        getattr(chain, m).return_value = chain
-    mock_db.table.return_value = chain
+    mock_db = _make_db([existing])
 
     with patch("app.services.schedule_service.get_db", return_value=mock_db):
         result = check_conflict("staff-001", datetime(2026, 7, 24, 10, 0))
