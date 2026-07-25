@@ -55,8 +55,15 @@ export const appointmentsApi = {
     return request<any[]>(`/appointments/?${qs}`);
   },
   get: (id: string) => request<any>(`/appointments/${id}`),
-  slots: (staffId: string, date: string) =>
-    request<any>(`/appointments/slots?staff_id=${staffId}&date=${date}`),
+  slots: (staffId: string, date: string, durationMin = 30, excludeAppointmentId?: string) => {
+    const qs = new URLSearchParams({
+      staff_id: staffId,
+      date,
+      duration_min: String(durationMin),
+      ...(excludeAppointmentId ? { exclude_appointment_id: excludeAppointmentId } : {}),
+    });
+    return request<{ slots: string[] }>(`/appointments/slots?${qs}`);
+  },
   create: (body: any) => request<any>("/appointments/", { method: "POST", body: JSON.stringify(body) }),
   update: (id: string, body: any) =>
     request<any>(`/appointments/${id}`, { method: "PATCH", body: JSON.stringify(body) }),

@@ -6,7 +6,17 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Dict, Optional
 from app.core.database import get_db
-from app.services.schedule_service import check_conflict, get_available_slots
+from app.services.schedule_service import check_conflict, get_available_slots, to_clinic
+
+
+def _clinic_instant(value: str) -> str:
+    """Normalize an agent-supplied time to an unambiguous instant.
+
+    The orchestrator builds these from LLM-extracted date/time text, so they
+    arrive naive; `scheduled_at` is TIMESTAMPTZ and would otherwise be read
+    as UTC rather than clinic wall-clock.
+    """
+    return to_clinic(datetime.fromisoformat(value)).isoformat()
 
 
 def tool_check_patient(patient_code: str) -> Dict[str, Any]:
@@ -48,7 +58,7 @@ def tool_create_appointment(
     data = {
         "patient_id": patient_id,
         "staff_id": staff_id,
-        "scheduled_at": scheduled_at,
+        "scheduled_at": _clinic_instant(scheduled_at),
         "duration_min": duration_min,
         "notes": notes,
         "status": "confirmed",
@@ -69,12 +79,13 @@ def tool_cancel_appointment(appointment_id: str, updated_by: str) -> Dict[str, A
 
 def tool_reschedule_appointment(appointment_id: str, new_scheduled_at: str, updated_by: str) -> Dict[str, Any]:
     db = get_db()
+    new_time = _clinic_instant(new_scheduled_at)
     db.table("appointments").update({
-        "scheduled_at": new_scheduled_at,
+        "scheduled_at": new_time,
         "status": "confirmed",
         "updated_by": updated_by,
     }).eq("id", appointment_id).execute()
-    return {"rescheduled": True, "appointment_id": appointment_id, "new_time": new_scheduled_at}
+    return {"rescheduled": True, "appointment_id": appointment_id, "new_time": new_time}
 
 
 APPOINTMENT_TOOLS = {

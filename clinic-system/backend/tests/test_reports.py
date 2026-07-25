@@ -1,6 +1,6 @@
 """Tests for report generation (PDF/CSV)."""
 import pytest
-from datetime import date
+from datetime import date, datetime, timedelta
 from unittest.mock import patch, MagicMock
 from app.services.report_service import (
     get_appointment_summary,
@@ -65,6 +65,38 @@ def test_missing_documents_report_identifies_gaps():
     with patch("app.services.report_service.get_db", return_value=mock_db):
         result = get_missing_documents_report()
     assert result["count"] >= 1
+
+
+def test_range_includes_the_whole_final_day():
+    """`lte(date_to)` resolved to 00:00 and silently dropped the last day."""
+    db = _make_db([])
+    chain = db.table.return_value
+    with patch("app.services.report_service.get_db", return_value=db):
+        get_appointment_summary(date(2026, 7, 20), date(2026, 7, 25))
+
+    start = chain.gte.call_args[0][1]
+    end = chain.lt.call_args[0][1]
+    assert start.startswith("2026-07-20T00:00:00")
+    # End is the *next* midnight, so 25 July is fully covered.
+    assert end.startswith("2026-07-26T00:00:00")
+
+
+def test_range_bounds_are_clinic_local_not_utc():
+    db = _make_db([])
+    chain = db.table.return_value
+    with patch("app.services.report_service.get_db", return_value=db):
+        get_appointment_summary(date(2026, 7, 20), date(2026, 7, 20))
+
+    start = datetime.fromisoformat(chain.gte.call_args[0][1])
+    assert start.utcoffset() == timedelta(hours=2)  # CEST
+
+
+def test_single_day_range_is_not_empty():
+    rows = [{"status": "confirmed", "scheduled_at": "2026-07-20T08:00:00+00:00"}]
+    db = _make_db(rows)
+    with patch("app.services.report_service.get_db", return_value=db):
+        result = get_appointment_summary(date(2026, 7, 20), date(2026, 7, 20))
+    assert result["total"] == 1
 
 
 def test_build_csv_report():

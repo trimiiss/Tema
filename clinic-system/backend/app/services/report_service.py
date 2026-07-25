@@ -7,15 +7,31 @@ from reportlab.lib import colors
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
 from app.core.database import get_db
+from app.services.schedule_service import to_clinic
+from datetime import datetime, time, timedelta
+
+
+def _day_bounds(date_from: date, date_to: date) -> tuple[str, str]:
+    """Clinic-local [start, end) instants covering both dates inclusively.
+
+    `date_to` is turned into the *following* midnight: comparing against
+    `date_to` itself resolves to 00:00 on that day and silently drops
+    everything scheduled during the last day of the range.
+    """
+    start = to_clinic(datetime.combine(date_from, time.min))
+    end = to_clinic(datetime.combine(date_to + timedelta(days=1), time.min))
+    return start.isoformat(), end.isoformat()
 
 
 def get_appointment_summary(date_from: date, date_to: date) -> Dict[str, Any]:
     db = get_db()
+    start, end = _day_bounds(date_from, date_to)
     resp = (
         db.table("appointments")
         .select("status, staff_id, service_id, scheduled_at")
-        .gte("scheduled_at", date_from.isoformat())
-        .lte("scheduled_at", date_to.isoformat())
+        .gte("scheduled_at", start)
+        .lt("scheduled_at", end)
+        .order("scheduled_at")
         .execute()
     )
     rows = resp.data
@@ -29,12 +45,14 @@ def get_appointment_summary(date_from: date, date_to: date) -> Dict[str, Any]:
 
 def get_no_show_report(date_from: date, date_to: date) -> Dict[str, Any]:
     db = get_db()
+    start, end = _day_bounds(date_from, date_to)
     resp = (
         db.table("appointments")
         .select("*, patients(first_name,last_name,code), staff(full_name)")
         .in_("status", ["no_show", "cancelled"])
-        .gte("scheduled_at", date_from.isoformat())
-        .lte("scheduled_at", date_to.isoformat())
+        .gte("scheduled_at", start)
+        .lt("scheduled_at", end)
+        .order("scheduled_at")
         .execute()
     )
     return {"count": len(resp.data), "rows": resp.data}

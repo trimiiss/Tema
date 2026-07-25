@@ -1,8 +1,9 @@
 "use client";
 import { useEffect, useState } from "react";
 import AppLayout from "@/components/layout/AppLayout";
-import { patientsApi } from "@/lib/api";
+import { patientsApi, usersApi } from "@/lib/api";
 import toast from "react-hot-toast";
+import PatientModal from "./PatientModal";
 
 export default function PatientsPage() {
   const [patients, setPatients] = useState<any[]>([]);
@@ -10,15 +11,35 @@ export default function PatientsPage() {
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<any>(null);
   const [missing, setMissing] = useState<string[]>([]);
+  const [roles, setRoles] = useState<string[]>([]);
+  const [showNew, setShowNew] = useState(false);
+  const [editing, setEditing] = useState<any>(null);
+
+  // The patient register is receptionist-owned; admins and doctors read only.
+  const canEdit = roles.includes("receptionist");
+
+  useEffect(() => {
+    usersApi.me().then(me => setRoles(me.roles)).catch(() => setRoles([]));
+  }, []);
 
   async function load() {
     setLoading(true);
     try {
-      setPatients(await patientsApi.list(search));
+      const data = await patientsApi.list(search);
+      setPatients(data);
+      // Keep the detail panel in step with an edit that just landed.
+      setSelected((s: any) => (s ? data.find(p => p.id === s.id) ?? null : null));
     } finally { setLoading(false); }
   }
 
   useEffect(() => { load(); }, [search]);
+
+  function nextPatientCode() {
+    const nums = patients
+      .map(p => parseInt(String(p.code ?? "").replace(/\D/g, ""), 10))
+      .filter(n => !isNaN(n));
+    return `P${String((nums.length ? Math.max(...nums) : 0) + 1).padStart(3, "0")}`;
+  }
 
   async function selectPatient(p: any) {
     setSelected(p);
@@ -29,7 +50,35 @@ export default function PatientsPage() {
   return (
     <AppLayout>
       <div className="space-y-6">
-        <h1 className="text-2xl font-bold text-gray-900">Patients</h1>
+        <div className="flex items-center justify-between">
+          <h1 className="text-2xl font-bold text-gray-900">Patients</h1>
+          {canEdit ? (
+            <button onClick={() => setShowNew(true)}
+              className="px-4 py-2.5 bg-primary-600 text-white rounded-lg text-sm font-medium hover:bg-primary-700 transition">
+              + Add Patient
+            </button>
+          ) : (
+            <span className="text-xs text-gray-400">
+              Read-only — only receptionists can add or edit patients
+            </span>
+          )}
+        </div>
+
+        {showNew && (
+          <PatientModal
+            suggestedCode={nextPatientCode()}
+            onClose={() => setShowNew(false)}
+            onSaved={load}
+          />
+        )}
+        {editing && (
+          <PatientModal
+            patient={editing}
+            suggestedCode={nextPatientCode()}
+            onClose={() => setEditing(null)}
+            onSaved={load}
+          />
+        )}
 
         <input
           value={search} onChange={e => setSearch(e.target.value)}
@@ -70,9 +119,17 @@ export default function PatientsPage() {
           {/* Detail panel */}
           {selected && (
             <div className="w-72 bg-white rounded-xl border border-gray-200 p-5 space-y-4 flex-shrink-0">
-              <div>
-                <h3 className="font-semibold text-gray-900">{selected.first_name} {selected.last_name}</h3>
-                <p className="text-xs text-gray-400 font-mono">{selected.code}</p>
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <h3 className="font-semibold text-gray-900">{selected.first_name} {selected.last_name}</h3>
+                  <p className="text-xs text-gray-400 font-mono">{selected.code}</p>
+                </div>
+                {canEdit && (
+                  <button onClick={() => setEditing(selected)}
+                    className="text-xs font-medium text-primary-600 hover:underline flex-shrink-0">
+                    Edit
+                  </button>
+                )}
               </div>
               <div className="space-y-2 text-sm">
                 {[["DOB", selected.dob], ["Gender", selected.gender], ["Phone", selected.phone],

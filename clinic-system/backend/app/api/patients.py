@@ -35,8 +35,13 @@ async def get_patient(
 @router.post("/", response_model=PatientOut, status_code=201)
 async def create_patient(
     body: PatientCreate,
-    user: dict = Depends(require_roles("admin", "receptionist")),
+    user: dict = Depends(require_roles("receptionist")),
 ):
+    """Receptionist-only: front-desk staff own the patient register.
+
+    Admins manage staff and accounts but do not edit patient records; doctors
+    are read-only. Keep this in sync with `update_patient`.
+    """
     db = get_db()
     data = body.model_dump(exclude_none=True)
     data["created_by"] = user["id"]
@@ -49,8 +54,9 @@ async def create_patient(
 async def update_patient(
     patient_id: str,
     body: PatientUpdate,
-    user: dict = Depends(require_roles("admin", "receptionist")),
+    user: dict = Depends(require_roles("receptionist")),
 ):
+    """Receptionist-only — see `create_patient`."""
     db = get_db()
     data = body.model_dump(exclude_none=True)
     if not data:

@@ -2,7 +2,9 @@
 
 ## 1. Supabase Project
 1. Go to supabase.com → New Project
-2. Go to SQL Editor → paste contents of `supabase/migrations/001_initial.sql` → Run
+2. Go to SQL Editor → paste each file in `supabase/migrations/` in filename order → Run
+   (`001_initial.sql`, then `002_uniform_working_hours.sql`, which puts every doctor on
+   Mon–Fri 09:00–17:00 — run it on an existing database too)
 3. Create a test user: Authentication → Users → Invite (e.g. admin@clinic.demo)
 4. Assign role: SQL Editor → `INSERT INTO user_roles (user_id, role_id) VALUES ('your-user-uuid', 1);`
 
@@ -29,7 +31,7 @@ cd backend
 pip install -r requirements.txt
 pytest tests/ -v
 ```
-Expected: 96 tests passing.
+Expected: 120 tests passing.
 
 ## 5. Demo Workflows
 
@@ -45,8 +47,16 @@ Expected: 96 tests passing.
 4. Go to **Appointments** → **+ New Appointment**
 5. Pick a patient and doctor — the slot picker fills with that doctor's open times,
    derived from the working hours set in step 2 (a doctor with no working hours shows none)
-6. Pick a slot and book. This writes directly, with no approval gate: a human filling in
+6. Booking someone not yet on file? Click **+ New patient** inside the form — they are
+   added with the next free `Pnnn` code and selected for this appointment.
+7. Pick a slot and book. This writes directly, with no approval gate: a human filling in
    a form is already the human in the loop. Double-booking is rejected with a 409.
+8. To change anything later, hit **Edit** on the row — patient, doctor, service, date,
+   time and notes are all editable, and availability is re-checked against the new
+   doctor and duration. Completed and cancelled appointments are read-only history.
+
+Times are wall-clock in `CLINIC_TIMEZONE` (default `Europe/Tirane`, matching Kosovo's
+CET/CEST offsets and EU DST rules). Set it in `.env` if the clinic runs elsewhere.
 
 ### Workflow 1 — Appointment Request
 1. Go to Agent Chat
@@ -68,7 +78,9 @@ Expected: 96 tests passing.
 
 ## Architecture Notes
 - Business rules (conflict detection, status transitions) = deterministic Python, zero LLM
-- Staff/account provisioning is admin-only; manual booking is admin + receptionist; doctors are read-only
+- Staff/account provisioning is admin-only; patient records are receptionist-only;
+  manual booking is admin + receptionist; doctors are read-only throughout
+- Doctors with no configured hours fall back to Mon–Fri 09:00–17:00 (`DEFAULT_WORK_*` in `.env`)
 - LLM (GPT-4o) is used only for: intent classification, document classification, field extraction, summarization
 - Document text is always passed as `user` role to GPT-4o — never as `system` (injection prevention)
 - Every write action goes through an approval gate before execution

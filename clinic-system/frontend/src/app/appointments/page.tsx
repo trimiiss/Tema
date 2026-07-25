@@ -4,7 +4,7 @@ import AppLayout from "@/components/layout/AppLayout";
 import { appointmentsApi, usersApi } from "@/lib/api";
 import { format, addDays, subDays } from "date-fns";
 import toast from "react-hot-toast";
-import NewAppointmentModal from "./NewAppointmentModal";
+import AppointmentModal from "./AppointmentModal";
 
 const STATUS_COLORS: Record<string, string> = {
   proposed:  "bg-yellow-100 text-yellow-700",
@@ -24,9 +24,13 @@ export default function AppointmentsPage() {
   const [dateFrom, setDateFrom] = useState(format(subDays(new Date(), 30), "yyyy-MM-dd"));
   const [dateTo, setDateTo] = useState(format(addDays(new Date(), 30), "yyyy-MM-dd"));
   const [statusFilter, setStatusFilter] = useState("");
+  const [sort, setSort] = useState("latest");
   const [roles, setRoles] = useState<string[]>([]);
   const [showNew, setShowNew] = useState(false);
+  const [editing, setEditing] = useState<any>(null);
   const canManage = roles.some(r => r === "admin" || r === "receptionist");
+  // The patient register is receptionist-owned; admins book but don't add patients.
+  const canAddPatients = roles.includes("receptionist");
 
   useEffect(() => {
     usersApi.me().then(me => setRoles(me.roles)).catch(() => setRoles([]));
@@ -36,7 +40,7 @@ export default function AppointmentsPage() {
     setLoading(true);
     try {
       const data = await appointmentsApi.list({
-        date_from: dateFrom, date_to: dateTo,
+        date_from: dateFrom, date_to: dateTo, sort,
         ...(statusFilter ? { status: statusFilter } : {}),
       });
       setAppointments(data);
@@ -45,7 +49,7 @@ export default function AppointmentsPage() {
     }
   }
 
-  useEffect(() => { load(); }, [dateFrom, dateTo, statusFilter]);
+  useEffect(() => { load(); }, [dateFrom, dateTo, statusFilter, sort]);
 
   async function handleStatusChange(id: string, newStatus: string) {
     try {
@@ -73,7 +77,19 @@ export default function AppointmentsPage() {
         </div>
 
         {showNew && (
-          <NewAppointmentModal onClose={() => setShowNew(false)} onCreated={load} />
+          <AppointmentModal
+            canCreatePatients={canAddPatients}
+            onClose={() => setShowNew(false)}
+            onSaved={load}
+          />
+        )}
+        {editing && (
+          <AppointmentModal
+            appointment={editing}
+            canCreatePatients={canAddPatients}
+            onClose={() => setEditing(null)}
+            onSaved={load}
+          />
         )}
 
         {/* Filters */}
@@ -98,6 +114,14 @@ export default function AppointmentsPage() {
               )}
             </select>
           </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">Sort</label>
+            <select value={sort} onChange={e => setSort(e.target.value)}
+              className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary-500 outline-none">
+              <option value="latest">Latest first</option>
+              <option value="earliest">Earliest first</option>
+            </select>
+          </div>
         </div>
 
         {/* Table */}
@@ -110,7 +134,16 @@ export default function AppointmentsPage() {
             <table className="w-full text-sm">
               <thead className="bg-gray-50 border-b border-gray-200">
                 <tr>
-                  {["Date & Time","Patient","Staff","Service","Status", ...(canManage ? ["Actions"] : [])].map(h =>
+                  <th className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">
+                    <button
+                      onClick={() => setSort(s => (s === "latest" ? "earliest" : "latest"))}
+                      className="flex items-center gap-1 hover:text-gray-900 transition uppercase tracking-wide"
+                      title={sort === "latest" ? "Sorted latest first — click for earliest" : "Sorted earliest first — click for latest"}
+                    >
+                      Date &amp; Time <span className="text-gray-400">{sort === "latest" ? "↓" : "↑"}</span>
+                    </button>
+                  </th>
+                  {["Patient","Staff","Service","Status", ...(canManage ? ["Actions"] : [])].map(h =>
                     <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">{h}</th>
                   )}
                 </tr>
@@ -129,20 +162,31 @@ export default function AppointmentsPage() {
                     </td>
                     {canManage && (
                       <td className="px-4 py-3">
-                        {NEXT_STATUSES[a.status]?.length ? (
-                          <select
-                            value=""
-                            onChange={e => e.target.value && handleStatusChange(a.id, e.target.value)}
-                            className="px-2 py-1 text-xs border border-gray-300 rounded focus:ring-2 focus:ring-primary-500 outline-none"
-                          >
-                            <option value="">Change status…</option>
-                            {NEXT_STATUSES[a.status].map(s => (
-                              <option key={s} value={s}>{s[0].toUpperCase() + s.slice(1)}</option>
-                            ))}
-                          </select>
-                        ) : (
-                          <span className="text-xs text-gray-400">—</span>
-                        )}
+                        <div className="flex items-center gap-3">
+                          {/* Finished appointments are history — don't let them be rewritten. */}
+                          {a.status !== "completed" && a.status !== "cancelled" && (
+                            <button
+                              onClick={() => setEditing(a)}
+                              className="text-xs font-medium text-primary-600 hover:underline"
+                            >
+                              Edit
+                            </button>
+                          )}
+                          {NEXT_STATUSES[a.status]?.length ? (
+                            <select
+                              value=""
+                              onChange={e => e.target.value && handleStatusChange(a.id, e.target.value)}
+                              className="px-2 py-1 text-xs border border-gray-300 rounded focus:ring-2 focus:ring-primary-500 outline-none"
+                            >
+                              <option value="">Change status…</option>
+                              {NEXT_STATUSES[a.status].map(s => (
+                                <option key={s} value={s}>{s[0].toUpperCase() + s.slice(1)}</option>
+                              ))}
+                            </select>
+                          ) : (
+                            <span className="text-xs text-gray-400">—</span>
+                          )}
+                        </div>
                       </td>
                     )}
                   </tr>

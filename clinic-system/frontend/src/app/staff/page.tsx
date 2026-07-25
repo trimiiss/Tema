@@ -14,8 +14,8 @@ const EMPTY_FORM = {
   email: "",
   password: "",
   work_days: [0, 1, 2, 3, 4] as number[],
-  start_time: "08:00",
-  end_time: "16:00",
+  start_time: "09:00",
+  end_time: "17:00",
 };
 
 export default function StaffPage() {
@@ -263,7 +263,9 @@ export default function StaffPage() {
                       <td className="px-4 py-3 font-medium">{s.full_name}</td>
                       <td className="px-4 py-3 text-gray-500">{s.specialty ?? "—"}</td>
                       <td className="px-4 py-3 text-gray-500">
-                        {sched.length ? <>{days} <span className="text-gray-400">{hours}</span></> : "— not scheduled"}
+                        {sched.length
+                          ? <>{days} <span className="text-gray-400">{hours}</span></>
+                          : <span className="text-gray-400">Mon–Fri 09:00–17:00 (default)</span>}
                       </td>
                       <td className="px-4 py-3 text-gray-500">{s.user_id ? "✓" : "—"}</td>
                       <td className="px-4 py-3">

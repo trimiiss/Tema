@@ -4,7 +4,7 @@ from app.core.auth import require_roles
 from app.core.database import get_db, execute_with_retry
 from app.core.audit import log_action
 from app.models.schemas import AppointmentCreate, AppointmentUpdate, AppointmentOut
-from app.services.schedule_service import check_conflict, get_available_slots
+from app.services.schedule_service import check_conflict, get_available_slots, to_clinic
 
 router = APIRouter(prefix="/appointments", tags=["appointments"])
 
@@ -35,8 +35,10 @@ async def list_appointments(
     staff_id: str = "",
     patient_id: str = "",
     status: str = "",
+    sort: str = "latest",
     user: dict = Depends(require_roles("admin", "receptionist", "doctor")),
 ):
+    """`sort=latest` puts the most recent appointment first; `earliest` reverses it."""
     db = get_db()
     q = db.table("appointments").select(APPOINTMENT_SELECT)
     if date_from:
@@ -49,7 +51,7 @@ async def list_appointments(
         q = q.eq("patient_id", patient_id)
     if status:
         q = q.eq("status", status)
-    resp = q.order("scheduled_at").execute()
+    resp = q.order("scheduled_at", desc=(sort != "earliest")).execute()
     return [_flatten(row) for row in resp.data]
 
 
@@ -57,10 +59,17 @@ async def list_appointments(
 async def available_slots(
     staff_id: str,
     date: str,
+    duration_min: int = 30,
+    exclude_appointment_id: str = "",
     user: dict = Depends(require_roles("admin", "receptionist")),
 ):
+    """Open start times, as ISO strings carrying the clinic's UTC offset.
+
+    `exclude_appointment_id` lets the edit form offer the slot the appointment
+    being edited currently occupies, instead of hiding it as self-conflicting.
+    """
     dt = datetime.fromisoformat(date)
-    slots = get_available_slots(staff_id, dt)
+    slots = get_available_slots(staff_id, dt, duration_min, exclude_appointment_id or None)
     return {"staff_id": staff_id, "date": date, "slots": slots}
 
 
@@ -89,7 +98,8 @@ async def create_appointment(
         )
     db = get_db()
     data = body.model_dump()
-    data["scheduled_at"] = data["scheduled_at"].isoformat()
+    # Naive input means clinic wall-clock; store an unambiguous instant.
+    data["scheduled_at"] = to_clinic(data["scheduled_at"]).isoformat()
     data["created_by"] = user["id"]
     data["updated_by"] = user["id"]
     resp = db.table("appointments").insert(data).execute()
@@ -115,16 +125,23 @@ async def update_appointment(
             detail=f"Cannot transition from '{current_status}' to '{body.status}'",
         )
 
-    if body.scheduled_at:
+    # Rescheduling, reassigning the doctor, or changing the duration all move
+    # the appointment's footprint, so any of them needs a fresh conflict check
+    # against the *new* values — and must ignore the appointment's own row.
+    staff_id = body.staff_id or existing.data["staff_id"]
+    scheduled_at = body.scheduled_at or datetime.fromisoformat(existing.data["scheduled_at"])
+    duration_min = body.duration_min or existing.data["duration_min"]
+
+    if body.scheduled_at or body.staff_id or body.duration_min:
         conflict = check_conflict(
-            existing.data["staff_id"], body.scheduled_at, existing.data["duration_min"]
+            staff_id, scheduled_at, duration_min, exclude_appointment_id=appointment_id
         )
-        if conflict and conflict["id"] != appointment_id:
+        if conflict:
             raise HTTPException(status_code=409, detail=f"Time conflict with {conflict['id']}")
 
     data = body.model_dump(exclude_none=True)
     if "scheduled_at" in data:
-        data["scheduled_at"] = data["scheduled_at"].isoformat()
+        data["scheduled_at"] = to_clinic(data["scheduled_at"]).isoformat()
     data["updated_by"] = user["id"]
     resp = execute_with_retry(db.table("appointments").update(data).eq("id", appointment_id))
     log_action(user["id"], "update", "appointment", appointment_id, data)

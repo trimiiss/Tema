@@ -2,8 +2,9 @@
 and for manual appointment booking by a receptionist."""
 import pytest
 from contextlib import contextmanager
+from datetime import datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 from fastapi.testclient import TestClient
 from app.main import app
 from tests.conftest import make_chain, patch_db
@@ -26,14 +27,18 @@ def make_client(token: str, role_name: str | None, tables: dict | None = None,
     `tables` maps table name -> data returned by .execute(); anything not listed
     falls back to []. The `user_roles` table doubles as the auth role lookup.
     """
+    explicit = tables or {}
     tables = {
         "user_roles": [{"roles": {"name": role_name}}] if role_name else [],
         "roles": {"id": 3},
         "staff": [DOCTOR_ROW],
-        **(tables or {}),
+        **explicit,
     }
     # One cached chain per table so tests can inspect the calls made on it.
-    chains: dict[str, MagicMock] = {}
+    # Chains for explicitly-passed tables exist up front, so a test can stub
+    # them before issuing the request; the rest appear on first use, which lets
+    # tests assert a table was never touched at all.
+    chains: dict[str, MagicMock] = {n: make_chain(tables[n]) for n in explicit}
 
     def table(name):
         if name not in chains:
@@ -262,6 +267,86 @@ def test_manual_booking_rejects_conflicting_slot(receptionist_token):
                 "scheduled_at": "2026-08-03T10:00:00", "duration_min": 30,
             })
         assert r.status_code == 409
+
+
+def test_manual_booking_stores_an_unambiguous_instant(receptionist_token):
+    """A naive time must be persisted with the clinic offset, not as UTC."""
+    with make_client(receptionist_token, "receptionist",
+                     {"appointments": [APPOINTMENT_ROW]}) as c:
+        with patch("app.api.appointments.check_conflict", return_value=None):
+            c.post("/appointments/", json={
+                "patient_id": "pat-1", "staff_id": "staff-1",
+                "scheduled_at": "2026-08-03T10:00:00", "duration_min": 30,
+            })
+        stored = c.chains["appointments"].insert.call_args[0][0]["scheduled_at"]
+        parsed = datetime.fromisoformat(stored)
+        assert parsed.tzinfo is not None, f"{stored} was stored naive"
+        assert parsed.hour == 10
+        assert parsed.utcoffset() == timedelta(hours=2)  # CEST
+
+
+# ---- Listing order ----
+
+def test_appointments_default_to_latest_first(receptionist_token):
+    with make_client(receptionist_token, "receptionist",
+                     {"appointments": [APPOINTMENT_ROW]}) as c:
+        assert c.get("/appointments/").status_code == 200
+        assert c.chains["appointments"].order.call_args == call("scheduled_at", desc=True)
+
+
+def test_appointments_can_be_sorted_earliest_first(receptionist_token):
+    with make_client(receptionist_token, "receptionist",
+                     {"appointments": [APPOINTMENT_ROW]}) as c:
+        assert c.get("/appointments/?sort=earliest").status_code == 200
+        assert c.chains["appointments"].order.call_args == call("scheduled_at", desc=False)
+
+
+# ---- Editing an existing appointment ----
+
+def test_receptionist_can_reassign_patient_doctor_and_time(receptionist_token):
+    updated = {**APPOINTMENT_ROW, "patient_id": "pat-2", "staff_id": "staff-2"}
+    with make_client(receptionist_token, "receptionist",
+                     {"appointments": APPOINTMENT_ROW}) as c:
+        # `.maybe_single()` fetches the existing row, the update returns a list.
+        c.chains["appointments"].update.return_value = make_chain([updated])
+        with patch("app.api.appointments.check_conflict", return_value=None) as cc:
+            r = c.patch("/appointments/appt-new-001", json={
+                "patient_id": "pat-2", "staff_id": "staff-2",
+                "scheduled_at": "2026-08-04T11:00:00", "duration_min": 60,
+            })
+        assert r.status_code == 200
+        # Conflict is re-checked against the NEW doctor and duration, and the
+        # appointment's own row is excluded so it never conflicts with itself.
+        kwargs = cc.call_args.kwargs
+        assert cc.call_args.args[0] == "staff-2"
+        assert cc.call_args.args[2] == 60
+        assert kwargs["exclude_appointment_id"] == "appt-new-001"
+
+
+def test_editing_into_a_taken_slot_is_rejected(receptionist_token):
+    with make_client(receptionist_token, "receptionist",
+                     {"appointments": APPOINTMENT_ROW}) as c:
+        with patch("app.api.appointments.check_conflict", return_value={"id": "other"}):
+            r = c.patch("/appointments/appt-new-001",
+                        json={"scheduled_at": "2026-08-04T11:00:00"})
+        assert r.status_code == 409
+
+
+def test_editing_only_notes_skips_the_conflict_check(receptionist_token):
+    """Nothing moved, so re-checking availability would be pointless work."""
+    with make_client(receptionist_token, "receptionist",
+                     {"appointments": APPOINTMENT_ROW}) as c:
+        c.chains["appointments"].update.return_value = make_chain([APPOINTMENT_ROW])
+        with patch("app.api.appointments.check_conflict") as cc:
+            r = c.patch("/appointments/appt-new-001", json={"notes": "rescheduled by phone"})
+        assert r.status_code == 200
+        cc.assert_not_called()
+
+
+def test_doctor_cannot_edit_appointment(admin_token):
+    with make_client(admin_token, "doctor") as c:
+        r = c.patch("/appointments/appt-new-001", json={"notes": "x"})
+        assert r.status_code == 403
 
 
 def test_doctor_cannot_book_appointment(admin_token):

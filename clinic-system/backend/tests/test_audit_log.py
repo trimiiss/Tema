@@ -69,7 +69,8 @@ def test_patient_create_audit_logged():
         "address": None, "notes": None, "created_at": None,
     }
     rows = {
-        "user_roles": [{"roles": {"name": "admin"}}],
+        # Creating patients is receptionist-only.
+        "user_roles": [{"roles": {"name": "receptionist"}}],
         "patients": [patient_data],
     }
     mock_db.table.side_effect = lambda name: make_chain(rows.get(name, [{}]))

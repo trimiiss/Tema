@@ -38,7 +38,7 @@ docker compose up --build
 Backend on :8000 (`/docs` for OpenAPI UI), frontend on :3000. Requires `.env` at repo root (copy `.env.example`) with `OPENAI_API_KEY` and Supabase credentials; `SUPABASE_JWT_SECRET` comes from Supabase Dashboard → Settings → API.
 
 ### Database
-Schema and seed data live in `supabase/migrations/001_initial.sql` — apply by pasting into the Supabase SQL Editor (no migration CLI/runner wired up). See `SETUP.md` for the full first-run checklist (create project, run migration, invite a user, assign a role via `user_roles`).
+Schema and seed data live in `supabase/migrations/` — apply by pasting into the Supabase SQL Editor in filename order (no migration CLI/runner wired up). `002_uniform_working_hours.sql` resets every doctor to Mon–Fri 09:00–17:00; it exists because the original seed gave each doctor different days, so booking on an unscheduled weekday returned no slots. See `SETUP.md` for the full first-run checklist (create project, run migration, invite a user, assign a role via `user_roles`).
 
 ## Architecture
 
@@ -63,20 +63,34 @@ Uploaded document text is always passed to GPT-4o as **user**-role content, neve
 ### Staff administration & manual booking (`backend/app/api/staff.py`)
 Two paths write appointments, and they are deliberately different:
 - **Agent path** (`POST /agent/run`) — proposes, opens an approval gate, executes only on approval. See above.
-- **Manual path** (`POST /appointments/`, used by the "New Appointment" form) — admins and receptionists write directly, no gate. The gate guards writes an *agent* proposed on a user's behalf; a human filling in a form is already the human in the loop. `tests/test_staff.py::test_receptionist_can_book_appointment_manually` asserts no `approval_gates` row is touched here.
+- **Manual path** (`POST /appointments/` and `PATCH /appointments/{id}`, used by the "New Appointment" / "Edit" form) — admins and receptionists write directly, no gate. The gate guards writes an *agent* proposed on a user's behalf; a human filling in a form is already the human in the loop. `tests/test_staff.py::test_receptionist_can_book_appointment_manually` asserts no `approval_gates` row is touched here.
+
+`PATCH /appointments/{id}` accepts `patient_id`, `staff_id`, `scheduled_at`, `duration_min`, `service_id`, `notes` and `status`. Changing the doctor, time, or duration all move the appointment's footprint, so any of them re-runs `check_conflict` against the **new** values with `exclude_appointment_id` set — otherwise the appointment conflicts with itself. Editing only notes/service skips the check entirely.
 
 `POST /staff/` is admin-only and is the one place accounts are provisioned. Given `email` + `password` it creates a Supabase Auth user via `db.auth.admin.create_user` and grants the role by inserting into `user_roles` (role id looked up by name, never hardcoded). `role: "doctor"` additionally inserts a `staff` row — doctors are the bookable resource appointments reference — plus `schedules` rows from `work_days`/`start_time`/`end_time`. `role: "receptionist"` creates the login only; receptionists are not bookable so they get no `staff` row, which is why the Staff page lists them under "Login accounts" (`GET /staff/accounts`) rather than in the staff table.
 
 Staff deletion is a soft delete (`active = false`) because `appointments.staff_id` references them. A doctor with no `schedules` rows produces zero available slots — the booking form surfaces this rather than failing silently.
 
+### Time handling (`backend/app/services/schedule_service.py`)
+`appointments.scheduled_at` is `TIMESTAMPTZ`, so a **naive** datetime handed to Postgres is silently read as UTC — that is how a 10:00 booking came back displaying as 12:00. Rules, all enforced by tests in `test_appointments.py`:
+- `CLINIC_TIMEZONE` (default `Europe/Tirane` — IANA has no `Europe/Pristina`; Tirane carries the CET/CEST offsets and EU DST rules Kosovo observes) is the wall-clock zone. `schedules.start_time`/`end_time` and generated slots are interpreted in it.
+- `to_clinic(dt)` reads a naive datetime as clinic wall-clock and converts an aware one. **Every datetime crossing the DB boundary must go through it** — that includes the agent path (`appointment_agent._clinic_instant`), not just the REST endpoints.
+- Slot strings are returned with an offset (`2026-08-03T10:00:00+02:00`). Compare times as instants (`datetime` objects, or `Date.getTime()` in the frontend), never as ISO strings — the same moment has several valid spellings.
+- Overlap is computed on **both** endpoints (`existing.start < new.end and existing.end > new.start`). A range query on `scheduled_at` alone misses an existing long appointment that starts before the new one.
+- `get_available_slots` only offers a start time if the whole `duration_min` fits inside the working block and clears every booked interval, so a 60-minute service is not slotted into the last 30 minutes of a shift.
+- A doctor with **no `schedules` rows at all** falls back to the clinic defaults (`DEFAULT_WORK_DAYS`/`DEFAULT_WORK_START`/`DEFAULT_WORK_END`, Mon–Fri 09:00–17:00). The fallback is all-or-nothing: once a doctor has any row, only their own rows apply, so a doctor deliberately set to Tue/Thu never sprouts hours they didn't agree to.
+
 ### Auth & roles (`backend/app/core/auth.py`)
-JWTs are Supabase-issued and verified locally against `SUPABASE_JWT_SECRET` (HS256, `verify_aud` disabled). Roles are looked up per-request from the `user_roles`/`roles` tables (not embedded in the JWT). Endpoints declare required roles via `require_roles("admin", "receptionist")` as a FastAPI dependency — there are three roles: `admin`, `receptionist`, `doctor`. All Supabase access from the backend uses the **service-role** key (`app/core/database.py`), so authorization is enforced entirely in the FastAPI layer, not via Postgres RLS from these endpoints.
+JWTs are Supabase-issued and verified locally against `SUPABASE_JWT_SECRET` (HS256, `verify_aud` disabled). Roles are looked up per-request from the `user_roles`/`roles` tables (not embedded in the JWT). Endpoints declare required roles via `require_roles("admin", "receptionist")` as a FastAPI dependency — there are three roles: `admin`, `receptionist`, `doctor`. Ownership splits by role, and the split is asserted in `tests/test_auth.py`:
+- **Patient register writes are `receptionist`-only** — not admin. The front desk owns patient records; admins manage staff and accounts. All three roles can *read* patients. The booking form hides its "+ New patient" control for non-receptionists to match.
+- **Staff/account writes are `admin`-only.**
+- **Appointment writes are `admin` + `receptionist`.** Doctors are read-only throughout. All Supabase access from the backend uses the **service-role** key (`app/core/database.py`), so authorization is enforced entirely in the FastAPI layer, not via Postgres RLS from these endpoints.
 
 ### Audit logging
 `app/core/audit.py::log_action(user_id, action, entity_type, entity_id, details)` writes to `audit_logs`. Called directly from API routes for document verify/reject and gate decisions, and from `orchestrator.resume_orchestrator` after executing an approved action. Any new mutating endpoint or approved-action branch should call this too.
 
 ### Reporting (`reporting_agent.py` / `report_service.py`)
-Fully deterministic — no LLM involved. Produces appointment summaries, no-show reports, and missing-document reports, rendered to PDF (`reportlab`) or CSV. Reachable both via chat (`report` intent → `node_report`) and directly via `POST /reports/generate`.
+Fully deterministic — no LLM involved. Date ranges are inclusive of **both** endpoints: `_day_bounds` turns `date_to` into the *following* clinic-local midnight and queries `gte(start) / lt(end)`. Comparing against `date_to` directly resolves to 00:00 on that day and silently drops everything scheduled during the final day of the range — the bug `test_range_includes_the_whole_final_day` pins. Produces appointment summaries, no-show reports, and missing-document reports, rendered to PDF (`reportlab`) or CSV. Reachable both via chat (`report` intent → `node_report`) and directly via `POST /reports/generate`.
 
 ### Frontend structure
 Next.js App Router pages under `frontend/src/app/` map roughly 1:1 to backend routers: `dashboard`, `patients`, `appointments`, `documents`, `reports`, `agent-chat`, `staff` (admin-only), plus `login`. All backend calls go through typed wrapper objects in `frontend/src/lib/api.ts` (`patientsApi`, `appointmentsApi`, `staffApi`, `servicesApi`, `documentsApi`, `reportsApi`, `agentApi`) which attach the Supabase session's access token as a Bearer header via `src/lib/supabase.ts` (`createBrowserClient`). Add new backend calls there rather than calling `fetch` ad hoc from components.

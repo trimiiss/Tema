@@ -168,18 +168,11 @@ INSERT INTO staff (id, full_name, specialty, active) VALUES
   ('11111111-0000-0000-0000-000000000003', 'Dr. Gentian Rexha',  'Internal Medicine', TRUE)
 ON CONFLICT DO NOTHING;
 
--- Schedules (Mon–Fri 08:00–16:00 for each doctor)
-INSERT INTO schedules (staff_id, weekday, start_time, end_time) VALUES
-  ('11111111-0000-0000-0000-000000000001', 0, '08:00', '16:00'),
-  ('11111111-0000-0000-0000-000000000001', 1, '08:00', '16:00'),
-  ('11111111-0000-0000-0000-000000000001', 2, '08:00', '16:00'),
-  ('11111111-0000-0000-0000-000000000001', 3, '08:00', '16:00'),
-  ('11111111-0000-0000-0000-000000000001', 4, '08:00', '16:00'),
-  ('11111111-0000-0000-0000-000000000002', 0, '09:00', '17:00'),
-  ('11111111-0000-0000-0000-000000000002', 2, '09:00', '17:00'),
-  ('11111111-0000-0000-0000-000000000002', 4, '09:00', '17:00'),
-  ('11111111-0000-0000-0000-000000000003', 1, '10:00', '18:00'),
-  ('11111111-0000-0000-0000-000000000003', 3, '10:00', '18:00')
+-- Schedules — every doctor works Mon–Fri 09:00–17:00
+INSERT INTO schedules (staff_id, weekday, start_time, end_time)
+SELECT s.id, d.weekday, '09:00'::time, '17:00'::time
+FROM staff s
+CROSS JOIN (VALUES (0), (1), (2), (3), (4)) AS d(weekday)
 ON CONFLICT DO NOTHING;
 
 -- Services

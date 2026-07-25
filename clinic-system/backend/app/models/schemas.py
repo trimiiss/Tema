@@ -53,7 +53,10 @@ class AppointmentCreate(BaseModel):
 
 
 class AppointmentUpdate(BaseModel):
+    patient_id: Optional[str] = None
+    staff_id: Optional[str] = None
     scheduled_at: Optional[datetime] = None
+    duration_min: Optional[int] = None
     status: Optional[str] = None
     notes: Optional[str] = None
     service_id: Optional[str] = None
