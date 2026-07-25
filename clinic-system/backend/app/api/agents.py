@@ -3,7 +3,7 @@ import json
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from app.core.auth import require_roles
-from app.core.database import get_db
+from app.core.database import get_db, execute_with_retry
 from app.core.audit import log_action
 from app.core.events import subscribe, unsubscribe, publish
 from app.models.schemas import AgentRunRequest, AgentRunOut, ApprovalDecision
@@ -22,11 +22,11 @@ async def start_agent_run(
     user: dict = Depends(require_roles("admin", "receptionist")),
 ):
     db = get_db()
-    run = db.table("agent_runs").insert({
+    run = execute_with_retry(db.table("agent_runs").insert({
         "user_id": user["id"],
         "input_text": body.input_text,
         "status": "running",
-    }).execute().data[0]
+    })).data[0]
 
     run_id = run["id"]
 
@@ -42,11 +42,15 @@ async def list_runs(
     user: dict = Depends(require_roles("admin", "receptionist")),
 ):
     db = get_db()
-    runs = db.table("agent_runs").select("*").eq("user_id", user["id"]).order("created_at", desc=True).limit(20).execute().data
+    runs = execute_with_retry(
+        db.table("agent_runs").select("*").eq("user_id", user["id"]).order("created_at", desc=True).limit(20)
+    ).data
     result = []
+    # 1 + 2N queries against a pooled connection: the shape most likely to hit a
+    # GOAWAY mid-list, so every one of them needs the retry guard.
     for run in runs:
-        steps = db.table("agent_steps").select("*").eq("run_id", run["id"]).order("timestamp").execute().data
-        gates = db.table("approval_gates").select("*").eq("run_id", run["id"]).execute().data
+        steps = execute_with_retry(db.table("agent_steps").select("*").eq("run_id", run["id"]).order("timestamp")).data
+        gates = execute_with_retry(db.table("approval_gates").select("*").eq("run_id", run["id"])).data
         result.append({**run, "steps": steps, "gates": gates})
     return result
 
@@ -57,11 +61,11 @@ async def get_run(
     user: dict = Depends(require_roles("admin", "receptionist")),
 ):
     db = get_db()
-    run = db.table("agent_runs").select("*").eq("id", run_id).maybe_single().execute()
+    run = execute_with_retry(db.table("agent_runs").select("*").eq("id", run_id).maybe_single())
     if not run.data:
         raise HTTPException(status_code=404, detail="Run not found")
-    steps = db.table("agent_steps").select("*").eq("run_id", run_id).order("timestamp").execute().data
-    gates = db.table("approval_gates").select("*").eq("run_id", run_id).execute().data
+    steps = execute_with_retry(db.table("agent_steps").select("*").eq("run_id", run_id).order("timestamp")).data
+    gates = execute_with_retry(db.table("approval_gates").select("*").eq("run_id", run_id)).data
     return {**run.data, "steps": steps, "gates": gates}
 
 
@@ -71,15 +75,15 @@ async def stream_run(
     user: dict = Depends(require_roles("admin", "receptionist")),
 ):
     db = get_db()
-    run = db.table("agent_runs").select("*").eq("id", run_id).maybe_single().execute()
+    run = execute_with_retry(db.table("agent_runs").select("*").eq("id", run_id).maybe_single())
     if not run.data:
         raise HTTPException(status_code=404, detail="Run not found")
 
     async def event_gen():
         q = subscribe(run_id)
         try:
-            steps = db.table("agent_steps").select("*").eq("run_id", run_id).order("timestamp").execute().data
-            gates = db.table("approval_gates").select("*").eq("run_id", run_id).execute().data
+            steps = execute_with_retry(db.table("agent_steps").select("*").eq("run_id", run_id).order("timestamp")).data
+            gates = execute_with_retry(db.table("approval_gates").select("*").eq("run_id", run_id)).data
             snapshot = {"type": "snapshot", "run": run.data, "steps": steps, "gates": gates}
             yield f"data: {json.dumps(snapshot)}\n\n"
 
@@ -115,17 +119,17 @@ async def decide_gate(
         raise HTTPException(status_code=400, detail="Decision must be 'approved' or 'rejected'")
 
     db = get_db()
-    gate = db.table("approval_gates").select("*").eq("id", gate_id).maybe_single().execute()
+    gate = execute_with_retry(db.table("approval_gates").select("*").eq("id", gate_id).maybe_single())
     if not gate.data:
         raise HTTPException(status_code=404, detail="Approval gate not found")
     if gate.data["status"] != "pending":
         raise HTTPException(status_code=409, detail="Gate already decided")
 
-    db.table("approval_gates").update({
+    execute_with_retry(db.table("approval_gates").update({
         "status": body.decision,
         "decided_by": user["id"],
         "decided_at": "now()",
-    }).eq("id", gate_id).execute()
+    }).eq("id", gate_id))
 
     log_action(user["id"], body.decision, "approval_gate", gate_id)
     publish(gate.data["run_id"], {"type": "gate", "gate": {**gate.data, "status": body.decision, "decided_by": user["id"]}})

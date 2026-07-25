@@ -3,7 +3,7 @@ import uuid
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 from app.core.auth import require_roles
-from app.core.database import get_db
+from app.core.database import get_db, execute_with_retry
 from app.core.audit import log_action
 from app.models.schemas import DocumentOut, DocumentFieldOut
 from app.services.ocr_service import process_document_async
@@ -72,7 +72,7 @@ async def get_document(
     user: dict = Depends(require_roles("admin", "receptionist", "doctor")),
 ):
     db = get_db()
-    resp = db.table("documents").select("*").eq("id", doc_id).maybe_single().execute()
+    resp = execute_with_retry(db.table("documents").select("*").eq("id", doc_id).maybe_single())
     if not resp.data:
         raise HTTPException(status_code=404, detail="Document not found")
     return resp.data

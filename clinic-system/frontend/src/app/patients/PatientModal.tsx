@@ -98,7 +98,7 @@ export default function PatientModal({
 
           <div className="grid grid-cols-3 gap-4">
             <div>
-              <label className={label}>Code {isEdit && <span className="text-gray-400">(fixed)</span>}</label>
+              <label className={label}>ID {isEdit && <span className="text-gray-400">(fixed)</span>}</label>
               <input className={field + (isEdit ? " bg-gray-50 text-gray-400" : "")}
                 value={form.code} disabled={isEdit}
                 onChange={e => set("code", e.target.value)} />

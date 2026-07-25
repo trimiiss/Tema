@@ -61,6 +61,10 @@ CET/CEST offsets and EU DST rules). Set it in `.env` if the clinic runs elsewher
 ### Workflow 1 — Appointment Request
 1. Go to Agent Chat
 2. Type: `Schedule Alban Krasniqi with Dr. Hoxha for a general checkup tomorrow at 10am`
+   (patients and doctors can be named however you'd say them out loud — `P001` or
+   `Alban Krasniqi`, `Dr. Hoxha` or `Dr. Arben Hoxha`. Pick a **weekday**: doctors
+   are Mon–Fri, and the agent refuses a time outside their working hours, listing
+   the open slots for that day instead.)
 3. See agent trace unfold (classify → check patient → check staff → check conflict)
 4. See Approval Gate appear → click **Approve**
 5. Appointment is created and audit log is written

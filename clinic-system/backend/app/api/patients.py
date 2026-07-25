@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from app.core.auth import get_current_user_roles, require_roles
-from app.core.database import get_db
+from app.core.database import get_db, execute_with_retry
 from app.core.audit import log_action
 from app.models.schemas import PatientCreate, PatientUpdate, PatientOut
 
@@ -26,7 +26,7 @@ async def get_patient(
     user: dict = Depends(require_roles("admin", "receptionist", "doctor")),
 ):
     db = get_db()
-    resp = db.table("patients").select("*").eq("id", patient_id).maybe_single().execute()
+    resp = execute_with_retry(db.table("patients").select("*").eq("id", patient_id).maybe_single())
     if not resp.data:
         raise HTTPException(status_code=404, detail="Patient not found")
     return resp.data
@@ -43,7 +43,9 @@ async def create_patient(
     are read-only. Keep this in sync with `update_patient`.
     """
     db = get_db()
-    data = body.model_dump(exclude_none=True)
+    # mode="json" renders `dob` as an ISO date string; postgrest JSON-encodes the
+    # payload and cannot serialize a datetime.date.
+    data = body.model_dump(mode="json", exclude_none=True)
     data["created_by"] = user["id"]
     resp = db.table("patients").insert(data).execute()
     log_action(user["id"], "create", "patient", resp.data[0]["id"], {"code": body.code})
@@ -58,7 +60,7 @@ async def update_patient(
 ):
     """Receptionist-only — see `create_patient`."""
     db = get_db()
-    data = body.model_dump(exclude_none=True)
+    data = body.model_dump(mode="json", exclude_none=True)  # see `create_patient`
     if not data:
         raise HTTPException(status_code=400, detail="No fields to update")
     data["updated_at"] = "now()"
@@ -75,7 +77,7 @@ async def missing_fields(
     user: dict = Depends(require_roles("admin", "receptionist")),
 ):
     db = get_db()
-    resp = db.table("patients").select("*").eq("id", patient_id).maybe_single().execute()
+    resp = execute_with_retry(db.table("patients").select("*").eq("id", patient_id).maybe_single())
     if not resp.data:
         raise HTTPException(status_code=404, detail="Patient not found")
     p = resp.data

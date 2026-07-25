@@ -20,6 +20,19 @@ _TRANSIENT = (
 )
 
 
+class _NoRow:
+    """Stand-in for a `.maybe_single()` query that matched nothing.
+
+    postgrest returns a bare `None` in that case rather than a response with
+    `data=None`, so every `resp.data` on the far side raises
+    `AttributeError: 'NoneType' object has no attribute 'data'` — a 500 where
+    the caller expected an empty result. Normalizing here keeps `.data` valid
+    at every call site, so `if not resp.data:` means "no such row" as intended.
+    """
+
+    data = None
+
+
 def execute_with_retry(query, attempts: int = 3):
     """Run a postgrest query, retrying a dropped HTTP/2 connection.
 
@@ -28,11 +41,15 @@ def execute_with_retry(query, attempts: int = 3):
     after that lands mid-request as `ConnectionTerminated`. The retry opens a
     fresh connection. Reads are safe to repeat; writes reach here only through
     endpoints whose inserts are idempotent for this purpose.
+
+    A `.maybe_single()` miss comes back as `_NoRow` rather than `None` — see
+    that class for why.
     """
     last: Exception | None = None
     for _ in range(attempts):
         try:
-            return query.execute()
+            result = query.execute()
+            return _NoRow() if result is None else result
         except _TRANSIENT as e:
             last = e
     raise last

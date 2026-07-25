@@ -6,7 +6,8 @@ displaying as 12:00. Every datetime here is therefore made timezone-aware in
 the clinic's zone before it crosses the DB boundary, and every comparison is
 done between instants rather than between ISO strings.
 """
-from datetime import datetime, timedelta
+import re
+from datetime import date, datetime, timedelta
 from typing import List, Optional
 from zoneinfo import ZoneInfo
 
@@ -29,6 +30,65 @@ def to_clinic(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=tz)
     return dt.astimezone(tz)
+
+
+def clinic_today() -> date:
+    """Today as the clinic reckons it — server UTC can already be tomorrow."""
+    return datetime.now(clinic_tz()).date()
+
+
+_RELATIVE_DAYS = {"today": 0, "tomorrow": 1, "day after tomorrow": 2}
+
+
+def parse_clinic_datetime(date_str: str, time_str: str) -> datetime:
+    """Build a naive clinic wall-clock datetime from model-supplied text.
+
+    Prompts ask for `YYYY-MM-DD` and `HH:MM`, but the model still returns
+    "tomorrow" and "10am" often enough that a strict `fromisoformat` on the
+    concatenation fails the whole booking. Normalize the common spellings
+    instead; anything genuinely unparseable raises ValueError for the caller
+    to report back so it can try again.
+    """
+    raw_date = (date_str or "").strip().lower()
+    raw_time = (time_str or "09:00").strip().lower()
+
+    if raw_date in _RELATIVE_DAYS:
+        day = clinic_today() + timedelta(days=_RELATIVE_DAYS[raw_date])
+    else:
+        day = date.fromisoformat(raw_date)  # raises on anything else
+
+    m = re.fullmatch(r"(\d{1,2})(?::(\d{2}))?\s*(am|pm)?", raw_time)
+    if not m:
+        raise ValueError(f"Unrecognized time: {time_str!r}")
+    hour, minute, meridiem = int(m.group(1)), int(m.group(2) or 0), m.group(3)
+    if meridiem == "pm" and hour != 12:
+        hour += 12
+    elif meridiem == "am" and hour == 12:
+        hour = 0
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        raise ValueError(f"Out-of-range time: {time_str!r}")
+
+    return datetime.combine(day, datetime.min.time()).replace(hour=hour, minute=minute)
+
+
+def parse_when(value: str) -> datetime:
+    """Parse a single datetime string an agent supplied, however it spelled it.
+
+    Agents are told to send ISO `YYYY-MM-DDTHH:MM`, and mostly do; the fallback
+    splits "2026-08-03 10am" / "tomorrow 14:00" into the two-part form.
+    """
+    raw = (value or "").strip()
+    if not raw:
+        raise ValueError("No date/time given")
+    try:
+        return datetime.fromisoformat(raw)
+    except ValueError:
+        pass
+    parts = raw.replace("T", " ").split()
+    if len(parts) == 1:
+        return parse_clinic_datetime(parts[0], "09:00")
+    # "day after tomorrow 10:00" — everything but the last token is the date.
+    return parse_clinic_datetime(" ".join(parts[:-1]), parts[-1])
 
 
 def _parse_hm(value: str) -> tuple[int, int]:

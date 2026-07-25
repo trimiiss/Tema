@@ -25,7 +25,7 @@ ASSIGNABLE_ROLES = ("doctor", "receptionist")
 
 
 def _role_id(db, role_name: str) -> int:
-    resp = db.table("roles").select("id").eq("name", role_name).maybe_single().execute()
+    resp = execute_with_retry(db.table("roles").select("id").eq("name", role_name).maybe_single())
     if not resp or not resp.data:
         raise HTTPException(status_code=422, detail=f"Unknown role '{role_name}'")
     return resp.data["id"]

@@ -82,7 +82,7 @@ export default function PatientsPage() {
 
         <input
           value={search} onChange={e => setSearch(e.target.value)}
-          placeholder="Search by name or code..."
+          placeholder="Search by name or ID..."
           className="w-full max-w-sm px-4 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary-500 outline-none"
         />
 
@@ -95,7 +95,7 @@ export default function PatientsPage() {
               <table className="w-full text-sm">
                 <thead className="bg-gray-50 border-b border-gray-200">
                   <tr>
-                    {["Code","Name","Gender","Phone","Email"].map(h =>
+                    {["ID","Name","Gender","Phone","Email"].map(h =>
                       <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">{h}</th>
                     )}
                   </tr>

@@ -46,6 +46,21 @@ def make_chain(data):
     return chain
 
 
+def table_chain(rows, single=None):
+    """A chain for a table queried both ways in one code path.
+
+    `make_chain` fixes one return value, which breaks as soon as a test drives
+    code that queries the same table with `.maybe_single()` (one row) *and*
+    without it (a list) — the agent proposals do exactly that, looking a patient
+    up by id and searching by name. `.maybe_single()` here yields `single`,
+    defaulting to the first of `rows`; everything else yields `rows`.
+    """
+    chain = make_chain(rows)
+    only = single if single is not None else (rows[0] if rows else None)
+    chain.maybe_single.return_value = make_chain(only)
+    return chain
+
+
 @pytest.fixture
 def mock_db():
     """Returns a mock Supabase client with chainable query methods."""

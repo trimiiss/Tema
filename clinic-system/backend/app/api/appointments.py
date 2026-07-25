@@ -79,7 +79,7 @@ async def get_appointment(
     user: dict = Depends(require_roles("admin", "receptionist", "doctor")),
 ):
     db = get_db()
-    resp = db.table("appointments").select(APPOINTMENT_SELECT).eq("id", appointment_id).maybe_single().execute()
+    resp = execute_with_retry(db.table("appointments").select(APPOINTMENT_SELECT).eq("id", appointment_id).maybe_single())
     if not resp.data:
         raise HTTPException(status_code=404, detail="Appointment not found")
     return _flatten(resp.data)
@@ -154,7 +154,7 @@ async def cancel_appointment(
     user: dict = Depends(require_roles("admin", "receptionist")),
 ):
     db = get_db()
-    existing = db.table("appointments").select("status").eq("id", appointment_id).maybe_single().execute()
+    existing = execute_with_retry(db.table("appointments").select("status").eq("id", appointment_id).maybe_single())
     if not existing.data:
         raise HTTPException(status_code=404, detail="Appointment not found")
     if existing.data["status"] in ("cancelled", "completed"):

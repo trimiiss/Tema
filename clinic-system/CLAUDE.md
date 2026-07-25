@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project overview
 
-Clinic Multi-Agent System — a diploma-thesis prototype for administrative clinic workflows (appointments, patient records, document intake, operational reporting) built on a multi-agent orchestration pattern. Backend: FastAPI + LangGraph. Frontend: Next.js 14 (App Router). DB/Auth: Supabase (Postgres + Auth). LLM: OpenAI GPT-4o, used strictly for language tasks (intent classification, document classification/extraction/summarization) — never for business logic or decisions that write data.
+Clinic Multi-Agent System — a diploma-thesis prototype for administrative clinic workflows (appointments, patient records, document intake, operational reporting). Four autonomous GPT-4o agents, each running its own tool-calling loop, coordinated by a supervisor over a cyclic LangGraph, with a human approval gate on every write an agent proposes. Backend: FastAPI + LangGraph. Frontend: Next.js 14 (App Router). DB/Auth: Supabase (Postgres + Auth).
+
+The division of labour is the design's core claim: **agents decide, deterministic Python validates, humans approve.** GPT-4o chooses which tools to call and what to propose; conflict detection, schedule validation, id resolution, field whitelisting and report arithmetic are plain Python with no LLM involvement; nothing an agent proposes touches the database until a human accepts the gate.
 
 ## Commands
 
@@ -14,7 +16,7 @@ All commands below are run from `clinic-system/` unless noted.
 ```bash
 cd backend
 pip install -r requirements.txt
-pytest tests/ -v                        # full suite (30+ tests)
+pytest tests/ -v                        # full suite (177 tests)
 pytest tests/test_appointments.py -v    # single file
 pytest tests/test_approval_gates.py -k test_gate_cannot_be_decided_twice -v  # single test
 ```
@@ -42,20 +44,56 @@ Schema and seed data live in `supabase/migrations/` — apply by pasting into th
 
 ## Architecture
 
-### Orchestrator / sub-agent pattern (`backend/app/agents/`)
-`orchestrator.py` builds a LangGraph `StateGraph` (`OrchestratorState` TypedDict) that is the single entry point for all natural-language requests (`POST /agent/run`):
+### Supervisor / autonomous-agent pattern (`backend/app/agents/`)
+`orchestrator.py` builds a **cyclic** LangGraph `StateGraph` (`OrchestratorState` TypedDict), the single entry point for all natural-language requests (`POST /agent/run`):
 
-1. `node_classify_intent` — the only place a raw user request is classified: GPT-4o returns `{intent, sub_intent, params}` (intent ∈ appointment/patient/document/report).
-2. Conditional routing (`_route_intent`) dispatches to one node per intent: `node_appointment`, `node_patient`, `node_document`, `node_report`, or `node_fallback`.
-3. Each node calls plain-Python "tool" functions defined in the matching sibling module (`appointment_agent.py`, `patient_agent.py`, `reporting_agent.py`, `document_agent.py`) — these do DB reads/writes and deterministic business logic (conflict detection, missing-field checks). GPT-4o is **not** called again here except inside `document_agent.py`.
-4. Every step (LLM call or tool call) is recorded via `_log_step` into `agent_steps` for full traceability of a run (`agent_runs` row per invocation).
-5. **Any write operation (create/cancel/reschedule appointment, create/update patient) does not execute directly.** The node builds a `pending_action` payload and inserts an `approval_gates` row (`status: pending`) instead, then returns `status: awaiting_approval`. Read/list operations return `status: completed` immediately with no gate.
-6. A human decides via `POST /agent/approve/{gate_id}` (`app/api/agents.py`) — this flips the gate's status, writes an `audit_logs` entry, and calls `resume_orchestrator`, which is the *only* code path allowed to actually call the mutating tool functions (`tool_create_appointment`, `tool_cancel_appointment`, etc.) and then writes another audit log entry.
+```
+supervisor ─┬─→ appointment_agent ─┐
+            ├─→ patient_agent ─────┤
+            ├─→ document_agent ────┼─→ (handed off? answered?) ─┬─→ supervisor
+            ├─→ reporting_agent ───┘                            └─→ finalize → END
+            └─→ fallback ──────────────────────────────────────────→ finalize
+```
 
-When adding a new write-capable agent action, follow this same two-phase shape (propose → gate → `resume_orchestrator` executes on approval) rather than performing the write inline in the classify/route node — the approval-gate invariant is enforced by tests (`tests/test_approval_gates.py`, `tests/test_scenarios.py::test_write_operations_all_require_approval`) and is a core thesis requirement, not incidental.
+1. `node_supervisor` picks **which** agent works next and writes its task; it never decides *how* the work is done. It returns `{agent, task, reason}` — an unrecognized agent name is coerced to `fallback` rather than becoming a graph node name.
+2. Each agent node runs `runtime.run_agent_loop(spec, ...)`: a ReAct loop where GPT-4o is given that agent's own tool schemas and chooses, turn by turn, which tool to call and when it is done. **Nothing scripts the tool sequence.** Each result is fed back as a `tool` message before the next decision.
+3. An agent whose task belongs to a peer calls `handoff_to_<agent>`, which ends its loop and returns control to the supervisor. On a handoff the supervisor **skips the model entirely** and routes to the named target — re-deciding is how two agents that each think the task is the other's ping-pong until the hop limit fires.
+4. Every LLM turn and tool call is recorded via `_log_step` into `agent_steps` (`agent_runs` row per invocation), so a multi-agent run is fully traceable.
+5. `MAX_HOPS` (4) caps agent visits per run; `runtime.DEFAULT_MAX_ITERATIONS` (6) caps turns within one agent's loop. Both are what make a cyclic graph terminate.
+
+When adding an agent: define an `AgentSpec` in its own module, add it to `AGENT_NAMES` and `_spec()` in `orchestrator.py`, add the graph node and its `_after_agent` conditional edges, and give peers a `handoff_tool` pointing at it. `_directory()` builds the supervisor's routing prompt from each spec's `purpose`, so that one line is what routing quality depends on.
+
+### The approval-gate invariant (`runtime.py`)
+Agent autonomy stops at the database, and this is enforced structurally rather than by prompt:
+
+- Every function that writes is decorated `@mutating`, which sets `__mutates_db__`. `assert_no_write_tools(spec)` runs at the top of every `run_agent_loop` and raises `WriteToolExposed` if any tool set contains one. `tests/test_agent_autonomy.py::test_no_agent_exposes_a_write_tool` pins it for all four agents.
+- Writes reach a model only as `propose_*` tools (`kind="proposal"`). A proposal returns `{"proposed": True, "action": {...}, "description": ...}` and **ends the agent's loop**; the node opens an `approval_gates` row and the run stops at `awaiting_approval`. A proposal returning `{"proposed": False, "error": ...}` is fed back as an ordinary tool result so the agent can replan — that is how the user gets offered alternative slots instead of an error.
+- Proposal validators **re-derive every fact from the database** rather than trusting the model's arguments: ids must resolve to real rows, the slot is re-checked against conflicts *and* the doctor's schedule, and the human-readable gate description is built from the rows just read. The proposal schemas deliberately have no `patient_name`/`staff_name`/`code` parameters, so a model cannot influence what a human sees on the approval card.
+- `resume_orchestrator` — reached only from `POST /agent/approve/{gate_id}` after a human decides — is the *only* code path that calls a `@mutating` function, and it writes an `audit_logs` entry for each.
+
+Follow this shape (propose → validate → gate → `resume_orchestrator` executes) for any new write-capable agent action. It is a core thesis requirement, not incidental.
+
+### Tool schemas are a contract (`runtime.ToolSpec`)
+A tool's JSON-schema property names must match its function's parameter names. A mismatch does not crash: the runtime returns "Wrong arguments" to the model, which re-reads the same schema and makes the same call until the iteration cap — a tool that silently never works. `test_every_tool_schema_matches_the_function_it_calls` checks this for every tool by `inspect.signature`, and it is why `tool_check_patient` takes `query` and `tool_check_staff` takes `name`.
+
+### Resolving names from agent input (`appointment_agent.py`)
+Agents pass names the way people say them, so lookups must tolerate it: `tool_check_patient` tries the `Pnnn` code then falls back to a name search (accepting a name **only** when it matches exactly one patient — ambiguous matches come back with `candidates` for the user to disambiguate, rather than booking the wrong person). `tool_check_staff` falls back to requiring every non-title token to appear in `full_name`, because "Dr. Hoxha" is not a contiguous substring of "Dr. Arben Hoxha" and a single `ilike` misses it.
+
+Dates and times get the same treatment: every agent's context supplies today's clinic date and the schemas ask for `YYYY-MM-DDTHH:MM`, but GPT-4o still returns "tomorrow" and "10am" often enough that `schedule_service.parse_when` / `parse_clinic_datetime` normalize both spellings instead of letting `fromisoformat` kill the booking. (These live in `schedule_service` rather than the orchestrator so agent modules can use them without an import cycle; `orchestrator` re-exports them.)
+
+`_slot_is_workable` — used by both `propose_create_appointment` and `propose_reschedule_appointment` — runs `check_conflict` **and** `get_available_slots`, not just the conflict check: an empty Sunday has no conflicts, so conflict-freedom alone let an agent propose a doctor outside their working days when the manual form (which offers only `get_available_slots`) could not. The reschedule path passes `exclude_appointment_id` or the appointment conflicts with itself.
 
 ### Document intake security pattern (`document_agent.py`)
 Uploaded document text is always passed to GPT-4o as **user**-role content, never system-role, and is explicitly framed as "data only" in the prompt — this is the injection-prevention pattern for untrusted OCR'd text. Field extraction and summarization prompts explicitly forbid returning medical diagnoses/symptoms/medications — only administrative fields (names, dates, policy numbers, etc.) are extracted. Preserve both properties (user-role placement, medical-content exclusion) when touching this file.
+
+### Agent test strategy (`tests/test_agent_autonomy.py`)
+Only the OpenAI calls are scripted; the tools run for real against a mocked Supabase, so the scheduling logic, id checks and proposal validators under test are the production ones. Two helpers make this work and are worth reusing:
+
+- `scripted(*responses)` returns a client that also **deep-copies the messages it was sent each turn** into `client.turns`. The runtime appends to one list as the loop runs and `call_args_list` records it by reference, so asserting on `call_args_list` silently checks the *final* conversation — which turns "was this fed back before the next decision?" into an assertion that always passes.
+- `conftest.table_chain(rows, single=)` — `.maybe_single()` yields one row while other terminals yield the list, for the tables agent proposals query both ways (by id, and by name search). `make_chain` fixes a single return value and breaks on those paths.
+- `tool_call(call_id, name, /, **args)` is positional-only because `find_staff` takes an argument literally called `name`.
+
+Add agent behaviour tests here (autonomy, handoff, validators), gate tests to `test_approval_gates.py`.
 
 ### Scenario-driven test suite
 `backend/tests/scenarios.json` holds 20 scenario fixtures (id, input, expected_intent/sub_intent, `requires_approval`, expected_outcome, optional `security_note`). `test_scenarios.py` asserts structural invariants across all of them (every write scenario requires approval, every read/report scenario doesn't, at least one scenario each for prompt-injection, medical-advice-blocking, unauthorized-access, and conflict-detection). When adding a new agent behavior, add a corresponding scenario entry rather than only unit-testing the code path.
@@ -90,6 +128,8 @@ JWTs are Supabase-issued and verified locally against `SUPABASE_JWT_SECRET` (HS2
 postgrest-py hardcodes `http2=True` and Supabase sends GOAWAY on idle connections, so a pooled connection reused just after that dies mid-request as `httpx.RemoteProtocolError: <ConnectionTerminated>`. It looks like an application bug but is pure transport noise, and it hits whichever query happens to run third or fourth — reports were failing this way because `report_service` issued four queries per generation without a guard.
 
 **Wrap every postgrest query in `execute_with_retry(...)`** rather than calling `.execute()` directly. Pass the builder, not the result: `execute_with_retry(db.table("x").select("*").eq(...))`. It retries the transient transport errors only and re-raises anything else on the first attempt, so real query bugs still surface immediately.
+
+It also normalizes the other postgrest sharp edge: **`.maybe_single()` returns a bare `None`, not a response with `data=None`**, when nothing matches. `resp.data` on that raises `AttributeError: 'NoneType' object has no attribute 'data'` — a 500 where the caller meant to return 404. `execute_with_retry` substitutes a `_NoRow` sentinel so `if not resp.data:` behaves as written. Never call `.maybe_single().execute()` directly.
 
 ### Audit logging
 `app/core/audit.py::log_action(user_id, action, entity_type, entity_id, details)` writes to `audit_logs`. Called directly from API routes for document verify/reject and gate decisions, and from `orchestrator.resume_orchestrator` after executing an approved action. Any new mutating endpoint or approved-action branch should call this too.
