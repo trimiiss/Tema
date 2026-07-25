@@ -1,0 +1,143 @@
+"use client";
+import { useEffect, useState } from "react";
+import AppLayout from "@/components/layout/AppLayout";
+import { appointmentsApi, usersApi } from "@/lib/api";
+import { format, addDays, subDays } from "date-fns";
+import toast from "react-hot-toast";
+
+const STATUS_COLORS: Record<string, string> = {
+  proposed:  "bg-yellow-100 text-yellow-700",
+  confirmed: "bg-green-100 text-green-700",
+  completed: "bg-blue-100 text-blue-700",
+  cancelled: "bg-red-100 text-red-700",
+};
+
+const NEXT_STATUSES: Record<string, string[]> = {
+  proposed:  ["confirmed", "cancelled"],
+  confirmed: ["completed", "cancelled"],
+};
+
+export default function AppointmentsPage() {
+  const [appointments, setAppointments] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [dateFrom, setDateFrom] = useState(format(subDays(new Date(), 30), "yyyy-MM-dd"));
+  const [dateTo, setDateTo] = useState(format(addDays(new Date(), 30), "yyyy-MM-dd"));
+  const [statusFilter, setStatusFilter] = useState("");
+  const [roles, setRoles] = useState<string[]>([]);
+  const canManage = roles.some(r => r === "admin" || r === "receptionist");
+
+  useEffect(() => {
+    usersApi.me().then(me => setRoles(me.roles)).catch(() => setRoles([]));
+  }, []);
+
+  async function load() {
+    setLoading(true);
+    try {
+      const data = await appointmentsApi.list({
+        date_from: dateFrom, date_to: dateTo,
+        ...(statusFilter ? { status: statusFilter } : {}),
+      });
+      setAppointments(data);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => { load(); }, [dateFrom, dateTo, statusFilter]);
+
+  async function handleStatusChange(id: string, newStatus: string) {
+    try {
+      await appointmentsApi.update(id, { status: newStatus });
+      toast.success("Status updated");
+      load();
+    } catch (e: any) {
+      toast.error(e.message);
+    }
+  }
+
+  return (
+    <AppLayout>
+      <div className="space-y-6">
+        <div className="flex items-center justify-between">
+          <h1 className="text-2xl font-bold text-gray-900">Appointments</h1>
+        </div>
+
+        {/* Filters */}
+        <div className="bg-white rounded-xl border border-gray-200 p-4 flex flex-wrap gap-4 items-end">
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">From</label>
+            <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)}
+              className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary-500 outline-none" />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">To</label>
+            <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)}
+              className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary-500 outline-none" />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-500 mb-1">Status</label>
+            <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
+              className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-primary-500 outline-none">
+              <option value="">All</option>
+              {["proposed","confirmed","completed","cancelled"].map(s =>
+                <option key={s} value={s}>{s}</option>
+              )}
+            </select>
+          </div>
+        </div>
+
+        {/* Table */}
+        <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+          {loading ? (
+            <div className="p-8 text-center text-gray-400">Loading...</div>
+          ) : appointments.length === 0 ? (
+            <div className="p-8 text-center text-gray-400">No appointments found</div>
+          ) : (
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 border-b border-gray-200">
+                <tr>
+                  {["Date & Time","Patient","Staff","Service","Status", ...(canManage ? ["Actions"] : [])].map(h =>
+                    <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">{h}</th>
+                  )}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {appointments.map(a => (
+                  <tr key={a.id} className="hover:bg-gray-50">
+                    <td className="px-4 py-3 font-medium">{format(new Date(a.scheduled_at), "MMM d, HH:mm")}</td>
+                    <td className="px-4 py-3 text-gray-600">{a.patient_name || a.patient_id.slice(0,8) + "…"}</td>
+                    <td className="px-4 py-3 text-gray-600">{a.staff_name || a.staff_id.slice(0,8) + "…"}</td>
+                    <td className="px-4 py-3 text-gray-600">{a.service_name || (a.service_id ? a.service_id.slice(0,8) + "…" : "—")}</td>
+                    <td className="px-4 py-3">
+                      <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${STATUS_COLORS[a.status] || "bg-gray-100 text-gray-600"}`}>
+                        {a.status}
+                      </span>
+                    </td>
+                    {canManage && (
+                      <td className="px-4 py-3">
+                        {NEXT_STATUSES[a.status]?.length ? (
+                          <select
+                            value=""
+                            onChange={e => e.target.value && handleStatusChange(a.id, e.target.value)}
+                            className="px-2 py-1 text-xs border border-gray-300 rounded focus:ring-2 focus:ring-primary-500 outline-none"
+                          >
+                            <option value="">Change status…</option>
+                            {NEXT_STATUSES[a.status].map(s => (
+                              <option key={s} value={s}>{s[0].toUpperCase() + s.slice(1)}</option>
+                            ))}
+                          </select>
+                        ) : (
+                          <span className="text-xs text-gray-400">—</span>
+                        )}
+                      </td>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    </AppLayout>
+  );
+}
