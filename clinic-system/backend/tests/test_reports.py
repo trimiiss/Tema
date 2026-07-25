@@ -99,6 +99,65 @@ def test_single_day_range_is_not_empty():
     assert result["total"] == 1
 
 
+# ---- Dropped Supabase connections ----
+#
+# postgrest-py hardcodes http2=True and Supabase GOAWAYs idle connections, so
+# a reused pooled connection can die mid-request. That is transport noise, not
+# a bad query, and must not surface as a failed report.
+
+def test_retry_recovers_from_a_dropped_connection():
+    import httpx
+    from app.core.database import execute_with_retry
+
+    query = MagicMock()
+    query.execute.side_effect = [
+        httpx.RemoteProtocolError("ConnectionTerminated"),
+        MagicMock(data=[{"status": "confirmed"}]),
+    ]
+    assert execute_with_retry(query).data == [{"status": "confirmed"}]
+    assert query.execute.call_count == 2
+
+
+def test_retry_gives_up_and_reraises():
+    import httpx
+    from app.core.database import execute_with_retry
+
+    query = MagicMock()
+    query.execute.side_effect = httpx.RemoteProtocolError("ConnectionTerminated")
+    with pytest.raises(httpx.RemoteProtocolError):
+        execute_with_retry(query, attempts=2)
+    assert query.execute.call_count == 2
+
+
+def test_retry_does_not_mask_a_genuine_error():
+    from app.core.database import execute_with_retry
+
+    query = MagicMock()
+    query.execute.side_effect = ValueError("bad column")
+    with pytest.raises(ValueError):
+        execute_with_retry(query)
+    assert query.execute.call_count == 1
+
+
+def test_missing_documents_report_survives_a_dropped_connection():
+    import httpx
+
+    patients = [{"id": "p1", "code": "P001", "first_name": "Alban", "last_name": "Krasniqi"}]
+    patient_chain = make_chain(patients)
+    doc_chain = make_chain([])
+    # The documents query is the third call and dies the first time round.
+    doc_chain.execute.side_effect = [
+        httpx.RemoteProtocolError("ConnectionTerminated"),
+        MagicMock(data=[]),
+    ]
+    mock_db = MagicMock()
+    mock_db.table.side_effect = lambda t: patient_chain if t == "patients" else doc_chain
+
+    with patch("app.services.report_service.get_db", return_value=mock_db):
+        result = get_missing_documents_report()
+    assert result["count"] == 1
+
+
 def test_build_csv_report():
     headers = ["Status", "Count"]
     rows = [["confirmed", "5"], ["cancelled", "2"]]

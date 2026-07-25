@@ -110,7 +110,10 @@ export const documentsApi = {
       headers: { Authorization: `Bearer ${token}` },
       body: form,
     });
-    if (!res.ok) throw new Error("Upload failed");
+    if (!res.ok) {
+      const detail = await res.json().then(e => e.detail).catch(() => null);
+      throw new Error(typeof detail === "string" ? detail : `Upload failed (${res.status})`);
+    }
     return res.json();
   },
 };
@@ -131,7 +134,13 @@ export const reportsApi = {
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       body: JSON.stringify({ date_from: dateFrom, date_to: dateTo, format }),
     });
-    if (!res.ok) throw new Error("Report generation failed");
+    if (!res.ok) {
+      // Surface the backend's detail — a bare "failed" hides the actual cause.
+      const detail = await res.json().then(e => e.detail).catch(() => null);
+      throw new Error(
+        typeof detail === "string" ? detail : `Report generation failed (${res.status})`
+      );
+    }
     return res.blob();
   },
   auditLog: (entityType = "") =>

@@ -86,6 +86,11 @@ JWTs are Supabase-issued and verified locally against `SUPABASE_JWT_SECRET` (HS2
 - **Staff/account writes are `admin`-only.**
 - **Appointment writes are `admin` + `receptionist`.** Doctors are read-only throughout. All Supabase access from the backend uses the **service-role** key (`app/core/database.py`), so authorization is enforced entirely in the FastAPI layer, not via Postgres RLS from these endpoints.
 
+### Supabase connection flakiness (`app/core/database.py`)
+postgrest-py hardcodes `http2=True` and Supabase sends GOAWAY on idle connections, so a pooled connection reused just after that dies mid-request as `httpx.RemoteProtocolError: <ConnectionTerminated>`. It looks like an application bug but is pure transport noise, and it hits whichever query happens to run third or fourth — reports were failing this way because `report_service` issued four queries per generation without a guard.
+
+**Wrap every postgrest query in `execute_with_retry(...)`** rather than calling `.execute()` directly. Pass the builder, not the result: `execute_with_retry(db.table("x").select("*").eq(...))`. It retries the transient transport errors only and re-raises anything else on the first attempt, so real query bugs still surface immediately.
+
 ### Audit logging
 `app/core/audit.py::log_action(user_id, action, entity_type, entity_id, details)` writes to `audit_logs`. Called directly from API routes for document verify/reject and gate decisions, and from `orchestrator.resume_orchestrator` after executing an approved action. Any new mutating endpoint or approved-action branch should call this too.
 

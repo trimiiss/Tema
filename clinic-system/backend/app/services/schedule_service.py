@@ -11,7 +11,7 @@ from typing import List, Optional
 from zoneinfo import ZoneInfo
 
 from app.core.config import settings
-from app.core.database import get_db
+from app.core.database import get_db, execute_with_retry
 
 SLOT_STEP_MINUTES = 30
 # Widest window we look back for an appointment that could still be running
@@ -58,7 +58,7 @@ def _schedules_for(staff_id: str, weekday: int) -> List[dict]:
     hours they never agreed to.
     """
     db = get_db()
-    resp = db.table("schedules").select("*").eq("staff_id", staff_id).execute()
+    resp = execute_with_retry(db.table("schedules").select("*").eq("staff_id", staff_id))
     rows = resp.data or []
     if not rows:
         rows = default_schedule_rows(staff_id)
@@ -69,14 +69,13 @@ def _booked_intervals(staff_id: str, window_start: datetime, window_end: datetim
                       exclude_id: Optional[str] = None) -> List[tuple[datetime, datetime, dict]]:
     """Live appointments for `staff_id` overlapping the window, as instants."""
     db = get_db()
-    resp = (
+    resp = execute_with_retry(
         db.table("appointments")
         .select("*")
         .eq("staff_id", staff_id)
         .not_.in_("status", ["cancelled", "no_show"])
         .gte("scheduled_at", window_start.isoformat())
         .lt("scheduled_at", window_end.isoformat())
-        .execute()
     )
     intervals = []
     for row in resp.data or []:

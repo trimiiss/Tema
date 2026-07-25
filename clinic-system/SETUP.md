@@ -31,7 +31,7 @@ cd backend
 pip install -r requirements.txt
 pytest tests/ -v
 ```
-Expected: 120 tests passing.
+Expected: 124 tests passing.
 
 ## 5. Demo Workflows
 

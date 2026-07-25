@@ -6,7 +6,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
-from app.core.database import get_db
+from app.core.database import get_db, execute_with_retry
 from app.services.schedule_service import to_clinic
 from datetime import datetime, time, timedelta
 
@@ -26,13 +26,12 @@ def _day_bounds(date_from: date, date_to: date) -> tuple[str, str]:
 def get_appointment_summary(date_from: date, date_to: date) -> Dict[str, Any]:
     db = get_db()
     start, end = _day_bounds(date_from, date_to)
-    resp = (
+    resp = execute_with_retry(
         db.table("appointments")
         .select("status, staff_id, service_id, scheduled_at")
         .gte("scheduled_at", start)
         .lt("scheduled_at", end)
         .order("scheduled_at")
-        .execute()
     )
     rows = resp.data
     total = len(rows)
@@ -46,22 +45,25 @@ def get_appointment_summary(date_from: date, date_to: date) -> Dict[str, Any]:
 def get_no_show_report(date_from: date, date_to: date) -> Dict[str, Any]:
     db = get_db()
     start, end = _day_bounds(date_from, date_to)
-    resp = (
+    resp = execute_with_retry(
         db.table("appointments")
         .select("*, patients(first_name,last_name,code), staff(full_name)")
         .in_("status", ["no_show", "cancelled"])
         .gte("scheduled_at", start)
         .lt("scheduled_at", end)
         .order("scheduled_at")
-        .execute()
     )
     return {"count": len(resp.data), "rows": resp.data}
 
 
 def get_missing_documents_report() -> Dict[str, Any]:
     db = get_db()
-    patients = db.table("patients").select("id,code,first_name,last_name").execute().data
-    docs = db.table("documents").select("patient_id,doc_type,status").execute().data
+    patients = execute_with_retry(
+        db.table("patients").select("id,code,first_name,last_name")
+    ).data
+    docs = execute_with_retry(
+        db.table("documents").select("patient_id,doc_type,status")
+    ).data
     docs_by_patient = {}
     for d in docs:
         pid = d["patient_id"]
