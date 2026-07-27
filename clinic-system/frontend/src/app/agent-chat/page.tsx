@@ -4,7 +4,10 @@ import AppLayout from "@/components/layout/AppLayout";
 import { agentApi, usersApi } from "@/lib/api";
 import toast from "react-hot-toast";
 
-type Message = { role: "user" | "agent"; text: string; runId?: string };
+// `run` is set only on messages rebuilt from history — it carries the steps and
+// gates `GET /agent/runs` already returned, so a finished run renders straight
+// away instead of re-fetching what we are holding.
+type Message = { role: "user" | "agent"; text: string; runId?: string; run?: any };
 
 const EXAMPLES = [
   "Schedule Alban Krasniqi with Dr. Hoxha for a general checkup tomorrow at 10am",
@@ -12,6 +15,25 @@ const EXAMPLES = [
   "Generate a weekly report for last week",
   "Show appointments for patient P001",
 ];
+
+const isFinished = (status?: string) => status === "completed" || status === "failed";
+
+function runLabel(run: any): string {
+  const short = run.id.slice(0, 8);
+  if (run.status === "awaiting_approval") return `Waiting for approval (run ${short})`;
+  if (run.status === "failed") return `Run ${short} failed`;
+  if (run.status === "running") return `Processing… (run ${short})`;
+  return `Run ${short}`;
+}
+
+/** Rebuild the transcript from the runs the backend already stores. */
+function messagesFromRuns(runs: any[]): Message[] {
+  // The endpoint returns newest first; a transcript reads oldest first.
+  return [...runs].reverse().flatMap((run): Message[] => [
+    { role: "user", text: run.input_text },
+    { role: "agent", text: runLabel(run), runId: run.id, run },
+  ]);
+}
 
 function TraceStep({ step }: { step: any }) {
   const [open, setOpen] = useState(false);
@@ -69,12 +91,18 @@ function ApprovalGate({ gate, onDecide, canDecide }: { gate: any; onDecide: (id:
   );
 }
 
-function RunDetail({ runId, onGateDecide, canDecide }: { runId: string; onGateDecide: (gateId: string, d: "approved"|"rejected") => void; canDecide: boolean }) {
-  const [run, setRun] = useState<any>(null);
+function RunDetail({ runId, initialRun, onGateDecide, canDecide }: { runId: string; initialRun?: any; onGateDecide: (gateId: string, d: "approved"|"rejected") => void; canDecide: boolean }) {
+  const [run, setRun] = useState<any>(initialRun ?? null);
+  // A run restored from history that already finished has nothing left to
+  // stream — its stream would send one snapshot and close. Skip the round-trip
+  // so reopening the page doesn't fire a request per past run. One still
+  // awaiting approval does need the stream: that gate can be decided from here.
+  const settled = isFinished(initialRun?.status);
 
   useEffect(() => {
     if (!runId) return;
-    setRun(null);
+    if (settled) return;
+    setRun(initialRun ?? null);
     const controller = new AbortController();
     agentApi.streamRun(runId, (event) => {
       setRun((prev: any) => {
@@ -103,7 +131,8 @@ function RunDetail({ runId, onGateDecide, canDecide }: { runId: string; onGateDe
       if (e?.name !== "AbortError") console.error(e);
     });
     return () => controller.abort();
-  }, [runId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runId, settled]);
 
   if (!run) return <div className="text-xs text-gray-400 mt-2">Loading trace…</div>;
 
@@ -145,11 +174,28 @@ export default function AgentChatPage() {
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const [roles, setRoles] = useState<string[] | null>(null);
+  const [loadingHistory, setLoadingHistory] = useState(true);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
   useEffect(() => {
     usersApi.me().then(me => setRoles(me.roles)).catch(() => setRoles([]));
+  }, []);
+
+  // Rebuild the transcript from `agent_runs` on every mount. Chat state lived
+  // only in this component, so leaving the page for the dashboard and coming
+  // back dropped it — but the backend has stored every run all along, keyed by
+  // user. Reading it back is what makes the history survive navigation, a
+  // reload and a different tab alike, rather than just an in-app route change.
+  useEffect(() => {
+    let cancelled = false;
+    agentApi.listRuns()
+      // History arrives asynchronously, so it must never overwrite a message
+      // the user managed to send while it was in flight.
+      .then(runs => { if (!cancelled) setMessages(prev => (prev.length ? prev : messagesFromRuns(runs))); })
+      .catch(() => { /* a fresh transcript is a fine fallback */ })
+      .finally(() => { if (!cancelled) setLoadingHistory(false); });
+    return () => { cancelled = true; };
   }, []);
 
   const canUseAgent = roles !== null && roles.some(r => r === "admin" || r === "receptionist");
@@ -214,7 +260,12 @@ export default function AgentChatPage() {
 
         {/* Messages */}
         <div className="flex-1 overflow-y-auto space-y-4 pb-4">
-          {messages.length === 0 && (
+          {loadingHistory && messages.length === 0 && (
+            <p className="text-sm text-gray-400">Loading earlier conversations…</p>
+          )}
+          {/* Only offer the examples once history has loaded and is genuinely
+              empty — otherwise they flash up and are replaced a moment later. */}
+          {!loadingHistory && messages.length === 0 && (
             <div className="space-y-4">
               <p className="text-gray-500 text-sm">Ask the multi-agent system anything administrative. Examples:</p>
               <div className="grid grid-cols-1 gap-2">
@@ -234,7 +285,7 @@ export default function AgentChatPage() {
                 : "bg-white border border-gray-200 rounded-2xl rounded-tl-sm px-4 py-3 text-sm text-gray-800 w-full"
               }`}>
                 {m.text}
-                {m.runId && <RunDetail runId={m.runId} onGateDecide={handleGateDecide} canDecide={canUseAgent} />}
+                {m.runId && <RunDetail runId={m.runId} initialRun={m.run} onGateDecide={handleGateDecide} canDecide={canUseAgent} />}
               </div>
             </div>
           ))}
