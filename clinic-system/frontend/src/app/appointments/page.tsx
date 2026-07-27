@@ -28,6 +28,9 @@ export default function AppointmentsPage() {
   const [roles, setRoles] = useState<string[]>([]);
   const [showNew, setShowNew] = useState(false);
   const [editing, setEditing] = useState<any>(null);
+  const [view, setView] = useState<"all" | "requests">("all");
+  const [requests, setRequests] = useState<any[]>([]);
+  const [requestsLoading, setRequestsLoading] = useState(true);
   const canManage = roles.some(r => r === "admin" || r === "receptionist");
   // The patient register is receptionist-owned; admins book but don't add patients.
   const canAddPatients = roles.includes("receptionist");
@@ -51,11 +54,30 @@ export default function AppointmentsPage() {
 
   useEffect(() => { load(); }, [dateFrom, dateTo, statusFilter, sort]);
 
+  // Separate from the main table: `status=proposed` alone also matches an
+  // appointment a receptionist just created and hasn't confirmed yet (that's
+  // the DB's default status too), so the queue of *visitor* submissions is
+  // its own fetch filtered on `source`, not a view of the same list above.
+  async function loadRequests() {
+    setRequestsLoading(true);
+    try {
+      const data = await appointmentsApi.list({ source: "patient_portal", status: "proposed", sort: "earliest" });
+      setRequests(data);
+    } finally {
+      setRequestsLoading(false);
+    }
+  }
+
+  // Loaded regardless of which tab is active, so the badge count is current
+  // even if the visitor is looking at "All appointments".
+  useEffect(() => { loadRequests(); }, []);
+
   async function handleStatusChange(id: string, newStatus: string) {
     try {
       await appointmentsApi.update(id, { status: newStatus });
       toast.success("Status updated");
       load();
+      loadRequests();
     } catch (e: any) {
       toast.error(e.message);
     }
@@ -92,6 +114,79 @@ export default function AppointmentsPage() {
           />
         )}
 
+        {/* Tabs — booking-chat submissions land as source='patient_portal' and
+            need review separately from the general table above. */}
+        <div className="flex gap-2 border-b border-gray-200">
+          {([
+            { key: "all", label: "All Appointments" },
+            { key: "requests", label: `Booking Requests${requests.length ? ` (${requests.length})` : ""}` },
+          ] as const).map(t => (
+            <button
+              key={t.key}
+              onClick={() => setView(t.key)}
+              className={`px-4 py-2 text-sm font-medium border-b-2 -mb-px transition ${
+                view === t.key
+                  ? "border-primary-600 text-primary-700"
+                  : "border-transparent text-gray-500 hover:text-gray-700"
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        {view === "requests" ? (
+          <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+            {requestsLoading ? (
+              <div className="p-8 text-center text-gray-400">Loading...</div>
+            ) : requests.length === 0 ? (
+              <div className="p-8 text-center text-gray-400">No pending booking requests</div>
+            ) : (
+              <div className="divide-y divide-gray-100">
+                {requests.map(a => (
+                  <div key={a.id} className="p-4 flex flex-wrap items-start gap-4">
+                    <div className="flex-1 min-w-[16rem]">
+                      <p className="font-medium text-gray-900">{a.patient_name || "Unknown patient"}</p>
+                      <p className="text-xs text-gray-500 mt-0.5">
+                        {a.patient_phone && <span>📞 {a.patient_phone} </span>}
+                        {a.patient_email && <span>✉️ {a.patient_email}</span>}
+                        {!a.patient_phone && !a.patient_email && "No contact details on file"}
+                      </p>
+                      <p className="text-sm text-gray-600 mt-2">
+                        {format(new Date(a.scheduled_at), "EEEE, MMM d 'at' HH:mm")} with{" "}
+                        <span className="font-medium">{a.staff_name || "—"}</span>
+                      </p>
+                      {a.notes && <p className="text-xs text-gray-400 mt-1 whitespace-pre-wrap">{a.notes}</p>}
+                    </div>
+                    {canManage && (
+                      <div className="flex gap-2 shrink-0">
+                        <button
+                          onClick={() => handleStatusChange(a.id, "confirmed")}
+                          className="px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white text-xs font-medium rounded-lg transition"
+                        >
+                          Confirm
+                        </button>
+                        <button
+                          onClick={() => handleStatusChange(a.id, "cancelled")}
+                          className="px-3 py-1.5 bg-red-50 hover:bg-red-100 text-red-700 text-xs font-medium rounded-lg transition"
+                        >
+                          Reject
+                        </button>
+                        <button
+                          onClick={() => setEditing(a)}
+                          className="px-3 py-1.5 text-gray-500 hover:bg-gray-50 text-xs font-medium rounded-lg transition"
+                        >
+                          Edit
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : (
+        <>
         {/* Filters */}
         <div className="bg-white rounded-xl border border-gray-200 p-4 flex flex-wrap gap-4 items-end">
           <div>
@@ -195,6 +290,8 @@ export default function AppointmentsPage() {
             </table>
           )}
         </div>
+        </>
+        )}
       </div>
     </AppLayout>
   );

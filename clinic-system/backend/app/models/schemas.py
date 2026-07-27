@@ -75,6 +75,12 @@ class AppointmentOut(BaseModel):
     patient_name: Optional[str] = None
     staff_name: Optional[str] = None
     service_name: Optional[str] = None
+    # 'staff' | 'patient_portal' — lets the Booking Requests queue tell a
+    # visitor's self-service submission apart from one a receptionist entered,
+    # since both start life with the same status ('proposed').
+    source: Optional[str] = "staff"
+    patient_phone: Optional[str] = None
+    patient_email: Optional[str] = None
 
 
 # ---- Staff ----
@@ -173,3 +179,37 @@ class ReportRequest(BaseModel):
     date_from: date
     date_to: date
     format: str = "pdf"  # "pdf" | "csv"
+
+
+# ---- Public booking (unauthenticated) ----
+# The visitor has no JWT, so `session_id` — a UUID the browser generates and
+# keeps in localStorage — is the only thing identifying "their" runs and gates.
+# Every public endpoint that reads or decides a run/gate checks it against
+# `agent_runs.session_id`.
+class PublicChatRequest(BaseModel):
+    session_id: str
+    message: str
+
+
+class PublicConfirmRequest(BaseModel):
+    session_id: str
+    decision: str  # "approved" | "rejected"
+
+
+class PublicDoctorOut(BaseModel):
+    id: str
+    full_name: str
+    specialty: Optional[str] = None
+    bio: Optional[str] = None
+
+
+class PublicReasonOut(BaseModel):
+    reason: str
+    label: str
+    specialty: str
+
+
+class PublicSlotsOut(BaseModel):
+    staff_id: str
+    date: str
+    slots: List[str]

@@ -278,16 +278,45 @@ async def _invoke_tool(
     return payload, None
 
 
+def _prior_turns(history: Sequence[Dict[str, str]]) -> List[Dict[str, Any]]:
+    """Earlier turns of the same conversation, as real chat messages.
+
+    Only `user` and `assistant` turns are carried. Tool messages are not
+    replayed: each one must be paired with the exact assistant message that
+    requested it or the API rejects the request, and a summary of what a tool
+    returned three turns ago is worth less than re-reading the live data.
+
+    What a person said earlier stays `role: "user"`. Folding a transcript into
+    the system prompt would be the easy way to add memory and it is the wrong
+    one — system-role text is the one channel the model is told to trust, so
+    anything a stranger typed must never arrive through it. Same rule the
+    document agent follows for OCR'd text.
+    """
+    turns: List[Dict[str, Any]] = []
+    for entry in history:
+        role = entry.get("role")
+        content = (entry.get("content") or "").strip()
+        if role in ("user", "assistant") and content:
+            turns.append({"role": role, "content": content})
+    return turns
+
+
 async def run_agent_loop(
     spec: AgentSpec,
     *,
     task: str,
     context: str = "",
+    history: Sequence[Dict[str, str]] = (),
     on_step: StepLogger = _noop_logger,
     client: Optional[AsyncOpenAI] = None,
     max_iterations: int = DEFAULT_MAX_ITERATIONS,
 ) -> AgentOutcome:
-    """Let `spec` work on `task` until it answers, delegates, proposes or gives up."""
+    """Let `spec` work on `task` until it answers, delegates, proposes or gives up.
+
+    `history` carries earlier turns of a multi-turn conversation. Staff runs are
+    one-shot and pass nothing; the public booking chat needs the model to
+    remember which doctor and day the patient already chose.
+    """
     assert_no_write_tools(spec)
     client = client or get_client()
 
@@ -299,6 +328,7 @@ async def run_agent_loop(
 
     messages: List[Dict[str, Any]] = [
         {"role": "system", "content": system},
+        *_prior_turns(history),
         {"role": "user", "content": task},
     ]
     transcript: List[Dict[str, Any]] = []

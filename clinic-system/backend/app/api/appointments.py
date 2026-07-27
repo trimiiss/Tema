@@ -8,7 +8,7 @@ from app.services.schedule_service import check_conflict, get_available_slots, t
 
 router = APIRouter(prefix="/appointments", tags=["appointments"])
 
-APPOINTMENT_SELECT = "*, patients(first_name,last_name), staff(full_name), services(name)"
+APPOINTMENT_SELECT = "*, patients(first_name,last_name,phone,email), staff(full_name), services(name)"
 
 
 def _flatten(row: dict) -> dict:
@@ -18,6 +18,11 @@ def _flatten(row: dict) -> dict:
     row["patient_name"] = f"{patient.get('first_name', '')} {patient.get('last_name', '')}".strip() or None
     row["staff_name"] = staff.get("full_name")
     row["service_name"] = service.get("name")
+    # Only useful in practice for the Booking Requests queue (source ==
+    # 'patient_portal'), where a receptionist needs a way to reach the visitor
+    # to confirm — but harmless to include everywhere the row is already read.
+    row["patient_phone"] = patient.get("phone")
+    row["patient_email"] = patient.get("email")
     return row
 
 VALID_TRANSITIONS = {
@@ -35,10 +40,17 @@ async def list_appointments(
     staff_id: str = "",
     patient_id: str = "",
     status: str = "",
+    source: str = "",
     sort: str = "latest",
     user: dict = Depends(require_roles("admin", "receptionist", "doctor")),
 ):
-    """`sort=latest` puts the most recent appointment first; `earliest` reverses it."""
+    """`sort=latest` puts the most recent appointment first; `earliest` reverses it.
+
+    `source` filters 'staff' vs 'patient_portal' — the Booking Requests queue
+    passes `source=patient_portal` because `status=proposed` alone also
+    matches an appointment a receptionist just created and hasn't confirmed
+    yet; both start in the same status.
+    """
     db = get_db()
     q = db.table("appointments").select(APPOINTMENT_SELECT)
     if date_from:
@@ -51,6 +63,8 @@ async def list_appointments(
         q = q.eq("patient_id", patient_id)
     if status:
         q = q.eq("status", status)
+    if source:
+        q = q.eq("source", source)
     resp = q.order("scheduled_at", desc=(sort != "earliest")).execute()
     return [_flatten(row) for row in resp.data]
 

@@ -9,8 +9,12 @@ with open(SCENARIOS_PATH) as f:
     ALL_SCENARIOS = json.load(f)
 
 
-def test_scenarios_file_has_20_entries():
-    assert len(ALL_SCENARIOS) == 20
+def test_scenarios_file_has_24_entries():
+    """S01-S20 are the original staff-agent scenarios; S21-S24 cover the
+    public booking chat (approval flow, injection, emergency deflection,
+    cross-session isolation) — see `tests/test_public_booking.py` for the
+    executable versions of those four."""
+    assert len(ALL_SCENARIOS) == 24
 
 
 def test_all_scenarios_have_required_fields():

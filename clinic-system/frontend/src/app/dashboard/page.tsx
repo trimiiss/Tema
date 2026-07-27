@@ -20,6 +20,7 @@ export default function DashboardPage() {
   const [todayAppts, setTodayAppts] = useState<any[]>([]);
   const [runs, setRuns] = useState<any[]>([]);
   const [stats, setStats] = useState({ total: 0, confirmed: 0, cancelled: 0 });
+  const [pendingRequests, setPendingRequests] = useState(0);
 
   useEffect(() => {
     const today = format(new Date(), "yyyy-MM-dd");
@@ -32,6 +33,11 @@ export default function DashboardPage() {
       });
     }).catch(() => {});
     agentApi.listRuns().then(setRuns).catch(() => {});
+    // Visitor-submitted bookings awaiting review — see the "Booking Requests"
+    // tab on /appointments, which is where these are actioned.
+    appointmentsApi.list({ source: "patient_portal", status: "proposed" })
+      .then(data => setPendingRequests(data.length))
+      .catch(() => {});
   }, []);
 
   return (
@@ -42,10 +48,11 @@ export default function DashboardPage() {
           <p className="text-gray-500 mt-1">{format(new Date(), "EEEE, MMMM d, yyyy")}</p>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
           <StatCard label="Today's Appointments" value={stats.total} icon="📅" color="bg-blue-50" />
           <StatCard label="Confirmed" value={stats.confirmed} icon="✅" color="bg-green-50" />
           <StatCard label="Cancelled" value={stats.cancelled} icon="❌" color="bg-red-50" />
+          <StatCard label="Booking Requests" value={pendingRequests} icon="📥" color="bg-amber-50" />
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

@@ -2,7 +2,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api import patients, appointments, documents, reports, agents, users, staff
+from app.api import patients, appointments, documents, reports, agents, users, staff, public
 from app.core import tasks
 
 
@@ -39,6 +39,7 @@ app.include_router(agents.router)
 app.include_router(users.router)
 app.include_router(staff.router)
 app.include_router(staff.services_router)
+app.include_router(public.router)
 
 
 @app.get("/health")
