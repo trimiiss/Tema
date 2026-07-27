@@ -112,6 +112,64 @@ def _history_for_session(session_id: str, exclude_run_id: str) -> List[Dict[str,
     return turns
 
 
+def _facts_for_session(session_id: str, exclude_run_id: str) -> str:
+    """Ids this conversation has already established, as a context line.
+
+    Each visitor message starts a *fresh* `run_agent_loop`, so the tool results
+    of earlier turns are gone by the time the visitor sends their contact
+    details — `_history_for_session` replays only the prose either side said.
+    That prose names "Dr. Arben Hoxha" but never his UUID, so a model asked to
+    call `propose_booking(staff_id=...)` has no id to pass and invents one,
+    breaking the "never invent an id" rule it was given because following it
+    was impossible.
+
+    Re-reading the doctors and slots out of `agent_steps` puts those ids back
+    in front of the model. Only the two step types that carry an id are read;
+    everything else in the trace is noise for this purpose.
+    """
+    runs = execute_with_retry(
+        get_db().table("agent_runs").select("id")
+        .eq("session_id", session_id).neq("id", exclude_run_id)
+        .order("created_at", desc=True).limit(MAX_HISTORY_RUNS)
+    ).data or []
+    if not runs:
+        return ""
+
+    steps = execute_with_retry(
+        get_db().table("agent_steps").select("action,output")
+        .in_("run_id", [r["id"] for r in runs]).order("timestamp")
+    ).data or []
+
+    doctors: Dict[str, str] = {}   # id -> name, deduped; later mentions win
+    slots: List[str] = []
+    for step in steps:
+        output = step.get("output") or {}
+        if step.get("action") == "list_doctors":
+            for doc in output.get("doctors") or []:
+                doctors[doc["id"]] = doc["full_name"]
+        elif step.get("action") == "find_earliest_slot" and output.get("found"):
+            doctors[output["staff_id"]] = output["staff_name"]
+            slots.append(f"{output['staff_name']} at {output['slot']}")
+        elif step.get("action") == "list_available_slots":
+            for slot in (output.get("slots") or [])[:5]:
+                name = doctors.get(output.get("staff_id"), output.get("staff_id"))
+                slots.append(f"{name} at {slot}")
+
+    parts: List[str] = []
+    if doctors:
+        listed = "; ".join(f"{name} (staff_id={sid})" for sid, name in doctors.items())
+        parts.append(f"Doctors already looked up in this conversation: {listed}.")
+    if slots:
+        parts.append(f"Slots already offered: {'; '.join(slots[-8:])}.")
+    if parts:
+        parts.append(
+            "Use these exact ids and times when the visitor refers back to a doctor "
+            "or slot from earlier — do not invent an id, and do not re-run a lookup "
+            "you already have the answer to."
+        )
+    return " ".join(parts)
+
+
 async def run_booking_agent(run_id: str, session_id: str, input_text: str) -> None:
     """Drive one turn of the public booking chat."""
     if triage.is_emergency(input_text):
@@ -128,6 +186,9 @@ async def run_booking_agent(run_id: str, session_id: str, input_text: str) -> No
     try:
         history = _history_for_session(session_id, run_id)
         context = f"Today is {clinic_today().isoformat()}."
+        facts = _facts_for_session(session_id, run_id)
+        if facts:
+            context = f"{context} {facts}"
 
         def on_step(agent: str, action: str, inp: Any, out: Any) -> None:
             _log_step(run_id, action, inp, out)
@@ -206,10 +267,16 @@ async def resume_public_booking(run_id: str, gate_id: str, decision: str) -> Non
             "source": "patient_portal", "patient_created": match["created"],
         })
 
+        # Built from the row just written, not from `action_description` — that
+        # string is phrased for the staff approval card ("Booking request for X
+        # with Y … pending clinic confirmation") and reads as nonsense once it
+        # is spliced into a sentence addressed to the visitor themselves.
+        when = to_clinic(datetime.fromisoformat(payload["scheduled_at"]))
         result = {
             "message": (
-                f"Thanks — your request to see {gate.get('action_description', '')} has been "
-                "sent to the clinic. You'll be contacted to confirm it; it isn't booked yet."
+                f"Thanks — your request to see {payload.get('staff_name', 'the doctor')} on "
+                f"{when.strftime('%A %d %B at %H:%M')} has been sent to the clinic. "
+                "You'll be contacted to confirm it; it isn't booked yet."
             ),
             "appointment": appointment,
             "patient_created": match["created"],

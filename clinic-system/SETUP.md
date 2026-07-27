@@ -11,6 +11,11 @@
      an `ON CONFLICT` with no matching unique index. Skip it and uploaded
      documents will store no extracted fields. See *Known Issues* below before
      running it if you have duplicate fields you want to diagnose first.
+   - `004_public_booking.sql` — adds `agent_runs.session_id`/`channel` and
+     `appointments.source`/`patients.source`. **Required** for the public
+     `/book` guest-chat flow: without it, guest agent runs have nowhere to
+     store their session id and the staff booking-request queue can't tell a
+     patient-submitted appointment from a staff one.
 3. Create a test user: Authentication → Users → Invite (e.g. admin@clinic.demo)
 4. Assign role: SQL Editor → `INSERT INTO user_roles (user_id, role_id) VALUES ('your-user-uuid', 1);`
 

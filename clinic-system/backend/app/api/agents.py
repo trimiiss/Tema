@@ -18,7 +18,7 @@ _SSE_KEEPALIVE_SECONDS = 15
 
 
 @router.post("/run", response_model=AgentRunOut, status_code=201)
-async def start_agent_run(
+def start_agent_run(
     body: AgentRunRequest,
     user: dict = Depends(require_roles("admin", "receptionist")),
 ):
@@ -38,25 +38,53 @@ async def start_agent_run(
 
 
 @router.get("/runs", response_model=list[AgentRunOut])
-async def list_runs(
+def list_runs(
+    since: str = "",
     user: dict = Depends(require_roles("admin", "receptionist")),
 ):
+    """This user's agent runs, newest first.
+
+    `since` (an ISO instant) narrows them to one sitting. The chat page passes
+    the moment the current login began, because a conversation resumed days
+    later reads as one continuous thread otherwise — the user sees replies to
+    questions they no longer remember asking, and the agent is fed that stale
+    context as history. Omitted, the full recent list comes back.
+    """
     db = get_db()
-    runs = execute_with_retry(
-        db.table("agent_runs").select("*").eq("user_id", user["id"]).order("created_at", desc=True).limit(20)
-    ).data
-    result = []
-    # 1 + 2N queries against a pooled connection: the shape most likely to hit a
-    # GOAWAY mid-list, so every one of them needs the retry guard.
-    for run in runs:
-        steps = execute_with_retry(db.table("agent_steps").select("*").eq("run_id", run["id"]).order("timestamp")).data
-        gates = execute_with_retry(db.table("approval_gates").select("*").eq("run_id", run["id"])).data
-        result.append({**run, "steps": steps, "gates": gates})
-    return result
+    q = db.table("agent_runs").select("*").eq("user_id", user["id"])
+    if since:
+        q = q.gte("created_at", since)
+    runs = execute_with_retry(q.order("created_at", desc=True).limit(20)).data
+    if not runs:
+        return []
+
+    # Three queries regardless of how many runs came back, rather than 1 + 2N.
+    # At the `limit(20)` above that was 41 sequential round-trips to a remote
+    # Postgres, which dominated the page load and was also the shape most
+    # likely to meet a GOAWAY partway through.
+    run_ids = [run["id"] for run in runs]
+    steps = execute_with_retry(
+        db.table("agent_steps").select("*").in_("run_id", run_ids).order("timestamp")
+    ).data or []
+    gates = execute_with_retry(
+        db.table("approval_gates").select("*").in_("run_id", run_ids)
+    ).data or []
+
+    steps_by_run: dict[str, list] = {}
+    for step in steps:
+        steps_by_run.setdefault(step["run_id"], []).append(step)
+    gates_by_run: dict[str, list] = {}
+    for gate in gates:
+        gates_by_run.setdefault(gate["run_id"], []).append(gate)
+
+    return [
+        {**run, "steps": steps_by_run.get(run["id"], []), "gates": gates_by_run.get(run["id"], [])}
+        for run in runs
+    ]
 
 
 @router.get("/runs/{run_id}", response_model=AgentRunOut)
-async def get_run(
+def get_run(
     run_id: str,
     user: dict = Depends(require_roles("admin", "receptionist")),
 ):
@@ -110,7 +138,7 @@ async def stream_run(
 
 
 @router.post("/approve/{gate_id}")
-async def decide_gate(
+def decide_gate(
     gate_id: str,
     body: ApprovalDecision,
     user: dict = Depends(require_roles("admin", "receptionist")),

@@ -16,7 +16,7 @@ router = APIRouter(prefix="/reports", tags=["reports"])
 
 
 @router.get("/summary")
-async def report_summary(
+def report_summary(
     date_from: date,
     date_to: date,
     user: dict = Depends(require_roles("admin", "receptionist")),
@@ -33,7 +33,7 @@ async def report_summary(
 
 
 @router.post("/generate")
-async def generate_report(
+def generate_report(
     body: ReportRequest,
     user: dict = Depends(require_roles("admin", "receptionist")),
 ):
@@ -92,7 +92,7 @@ async def generate_report(
 
 
 @router.get("/audit-log")
-async def get_audit_log(
+def get_audit_log(
     entity_type: str = "",
     limit: int = 100,
     user: dict = Depends(require_roles("admin")),

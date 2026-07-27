@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
+import { clearSessionStart } from "@/lib/session";
 import { usersApi } from "@/lib/api";
 
 const NAV = [
@@ -26,6 +27,10 @@ export default function Sidebar() {
 
   async function logout() {
     await supabase.auth.signOut();
+    // Drop the agent-chat session marker, or signing back in on this same tab
+    // would resume the previous login's transcript — the thing scoping the
+    // history to one login was meant to prevent.
+    clearSessionStart();
     router.replace("/login");
   }
 

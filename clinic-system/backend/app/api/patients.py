@@ -8,7 +8,7 @@ router = APIRouter(prefix="/patients", tags=["patients"])
 
 
 @router.get("/", response_model=list[PatientOut])
-async def list_patients(
+def list_patients(
     search: str = "",
     user: dict = Depends(require_roles("admin", "receptionist", "doctor")),
 ):
@@ -21,7 +21,7 @@ async def list_patients(
 
 
 @router.get("/{patient_id}", response_model=PatientOut)
-async def get_patient(
+def get_patient(
     patient_id: str,
     user: dict = Depends(require_roles("admin", "receptionist", "doctor")),
 ):
@@ -33,7 +33,7 @@ async def get_patient(
 
 
 @router.post("/", response_model=PatientOut, status_code=201)
-async def create_patient(
+def create_patient(
     body: PatientCreate,
     user: dict = Depends(require_roles("receptionist")),
 ):
@@ -53,7 +53,7 @@ async def create_patient(
 
 
 @router.patch("/{patient_id}", response_model=PatientOut)
-async def update_patient(
+def update_patient(
     patient_id: str,
     body: PatientUpdate,
     user: dict = Depends(require_roles("receptionist")),
@@ -72,7 +72,7 @@ async def update_patient(
 
 
 @router.get("/{patient_id}/missing-fields")
-async def missing_fields(
+def missing_fields(
     patient_id: str,
     user: dict = Depends(require_roles("admin", "receptionist")),
 ):

@@ -1,10 +1,12 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException
 from app.core.auth import require_roles
 from app.core.database import get_db, execute_with_retry
 from app.core.audit import log_action
 from app.models.schemas import AppointmentCreate, AppointmentUpdate, AppointmentOut
-from app.services.schedule_service import check_conflict, get_available_slots, to_clinic
+from app.services.schedule_service import (
+    check_conflict, complete_elapsed_appointments, get_available_slots, to_clinic,
+)
 
 router = APIRouter(prefix="/appointments", tags=["appointments"])
 
@@ -34,7 +36,7 @@ VALID_TRANSITIONS = {
 
 
 @router.get("/", response_model=list[AppointmentOut])
-async def list_appointments(
+def list_appointments(
     date_from: str = "",
     date_to: str = "",
     staff_id: str = "",
@@ -51,12 +53,24 @@ async def list_appointments(
     matches an appointment a receptionist just created and hasn't confirmed
     yet; both start in the same status.
     """
+    # Settle anything whose time has passed before reading, so the list never
+    # shows a confirmed appointment from this morning as still upcoming. Runs
+    # here rather than on a scheduler because the prototype has none; it is one
+    # extra query when there is nothing to promote.
+    complete_elapsed_appointments()
+
     db = get_db()
     q = db.table("appointments").select(APPOINTMENT_SELECT)
     if date_from:
-        q = q.gte("scheduled_at", date_from)
+        q = q.gte("scheduled_at", to_clinic(datetime.fromisoformat(date_from)).isoformat())
     if date_to:
-        q = q.lte("scheduled_at", date_to)
+        # The *following* clinic midnight, half-open — `lte(date_to)` resolves to
+        # 00:00 on that day and silently drops everything scheduled during it, so
+        # a same-day range (`date_from == date_to`, which is how the dashboard
+        # asks for "today") matched only an appointment booked at exactly
+        # midnight. Same rule as `report_service._day_bounds`.
+        end = datetime.fromisoformat(date_to) + timedelta(days=1)
+        q = q.lt("scheduled_at", to_clinic(end).isoformat())
     if staff_id:
         q = q.eq("staff_id", staff_id)
     if patient_id:
@@ -70,7 +84,7 @@ async def list_appointments(
 
 
 @router.get("/slots")
-async def available_slots(
+def available_slots(
     staff_id: str,
     date: str,
     duration_min: int = 30,
@@ -88,7 +102,7 @@ async def available_slots(
 
 
 @router.get("/{appointment_id}", response_model=AppointmentOut)
-async def get_appointment(
+def get_appointment(
     appointment_id: str,
     user: dict = Depends(require_roles("admin", "receptionist", "doctor")),
 ):
@@ -100,7 +114,7 @@ async def get_appointment(
 
 
 @router.post("/", response_model=AppointmentOut, status_code=201)
-async def create_appointment(
+def create_appointment(
     body: AppointmentCreate,
     user: dict = Depends(require_roles("admin", "receptionist")),
 ):
@@ -122,7 +136,7 @@ async def create_appointment(
 
 
 @router.patch("/{appointment_id}", response_model=AppointmentOut)
-async def update_appointment(
+def update_appointment(
     appointment_id: str,
     body: AppointmentUpdate,
     user: dict = Depends(require_roles("admin", "receptionist")),
@@ -137,6 +151,20 @@ async def update_appointment(
         raise HTTPException(
             status_code=422,
             detail=f"Cannot transition from '{current_status}' to '{body.status}'",
+        )
+
+    # Deciding a guest's own booking request (accept/reject) is receptionist-only —
+    # narrower than the admin+receptionist write access appointments normally get,
+    # because this is the step that puts a stranger's request onto the schedule.
+    is_guest_decision = (
+        existing.data.get("source") == "patient_portal"
+        and current_status == "proposed"
+        and body.status in ("confirmed", "cancelled")
+    )
+    if is_guest_decision and "receptionist" not in user["roles"]:
+        raise HTTPException(
+            status_code=403,
+            detail="Only a receptionist can accept or reject a patient-submitted booking request",
         )
 
     # Rescheduling, reassigning the doctor, or changing the duration all move
@@ -163,7 +191,7 @@ async def update_appointment(
 
 
 @router.delete("/{appointment_id}", status_code=204)
-async def cancel_appointment(
+def cancel_appointment(
     appointment_id: str,
     user: dict = Depends(require_roles("admin", "receptionist")),
 ):

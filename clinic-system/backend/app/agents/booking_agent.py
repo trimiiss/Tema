@@ -33,6 +33,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Any, Dict, Optional
 
+from postgrest.exceptions import APIError
+
 from app.agents.runtime import AgentSpec, ToolSpec, obj, string
 from app.core.database import get_db, execute_with_retry
 from app.services import triage
@@ -131,9 +133,26 @@ def tool_list_services() -> Dict[str, Any]:
 
 
 def _load_active_staff(staff_id: str) -> Optional[dict]:
-    return execute_with_retry(
-        get_db().table("staff").select(_STAFF_COLUMNS).eq("id", staff_id).eq("active", True).maybe_single()
-    ).data
+    """The doctor with this id, or None.
+
+    `staff.id` is a UUID column, so an id the model invented rather than read
+    from a tool result ('doc123') is not merely absent — Postgres rejects the
+    comparison and postgrest surfaces it as an `APIError`, which would escape
+    `propose_booking` as an unhandled exception and end the run with a generic
+    "technical issue". A malformed id means the same thing to the caller as an
+    unknown one, so it comes back as None and the model gets told to look the
+    doctor up first.
+    """
+    try:
+        return execute_with_retry(
+            get_db().table("staff").select(_STAFF_COLUMNS).eq("id", staff_id).eq("active", True).maybe_single()
+        ).data
+    except APIError:
+        # `execute_with_retry` has already exhausted the transient transport
+        # failures, so an APIError surviving to here is the query itself being
+        # unanswerable — for a lookup whose only variable is `staff_id`, that
+        # means the id is unusable. Same answer as "no such doctor".
+        return None
 
 
 def _slot_is_workable(staff_id: str, when: datetime, duration_min: int) -> Dict[str, Any]:

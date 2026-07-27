@@ -18,6 +18,7 @@ from unittest.mock import MagicMock, patch
 
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from postgrest.exceptions import APIError
 
 from app.agents.booking_agent import BOOKING_AGENT, propose_booking
 from app.agents.runtime import _prior_turns, assert_no_write_tools, run_agent_loop
@@ -203,6 +204,29 @@ def test_propose_booking_proposes_a_workable_slot_without_touching_patients(clin
 def test_propose_booking_refuses_an_unknown_doctor(clinic_db):
     clinic_db.table.side_effect = lambda name: table_chain([]) if name == "staff" else make_chain([])
     result = propose_booking(first_name="Arta", last_name="Berisha", staff_id="s-does-not-exist",
+                              scheduled_at=MONDAY_10, phone="044111222")
+    assert result["proposed"] is False
+    assert "No active doctor" in result["error"]
+
+
+def test_propose_booking_refuses_an_id_postgres_cannot_even_compare(clinic_db):
+    """An invented id must come back as a refusal, not an exception.
+
+    `staff.id` is a UUID column, so an id the model made up rather than read
+    from a tool result ('doc123') doesn't merely miss — Postgres rejects the
+    comparison and postgrest raises `APIError`. Escaping `propose_booking`,
+    that killed the whole run with a generic "technical issue" the model
+    could not act on; as a refusal it is one more tool result to replan from.
+    """
+    def raising_staff_table(name):
+        if name != "staff":
+            return make_chain([])
+        chain = table_chain([])
+        chain.execute.side_effect = APIError({"message": "Missing response", "code": "204"})
+        return chain
+
+    clinic_db.table.side_effect = raising_staff_table
+    result = propose_booking(first_name="Arta", last_name="Berisha", staff_id="doc123",
                               scheduled_at=MONDAY_10, phone="044111222")
     assert result["proposed"] is False
     assert "No active doctor" in result["error"]

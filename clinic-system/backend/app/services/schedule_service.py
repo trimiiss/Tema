@@ -207,3 +207,51 @@ def check_conflict(staff_id: str, scheduled_at: datetime, duration_min: int = SL
         if b_start < end and b_end > start:
             return row
     return None
+
+
+def complete_elapsed_appointments() -> int:
+    """Promote `confirmed` appointments whose end time has passed to `completed`.
+
+    There is no scheduler in this prototype, so the sweep runs lazily off the
+    appointment list — the one read path that every surface showing a status
+    goes through. One indexed query finds candidates and one update settles
+    them, so a load with nothing to do costs a single query.
+
+    Two limits are deliberate:
+
+    - **Only `confirmed` is promoted.** A `proposed` appointment whose time
+      passed was never accepted by anyone, so calling it "completed" would
+      assert the visit happened on no evidence; it stays proposed and stale,
+      which is the honest state and what the booking-requests queue is for.
+      `cancelled` is terminal. This mirrors `VALID_TRANSITIONS` exactly, so the
+      sweep can never make a move a human couldn't.
+    - **The end of the appointment, not its start.** Comparing `scheduled_at`
+      alone marks an appointment completed while the patient is still in the
+      room.
+    """
+    db = get_db()
+    now = datetime.now(clinic_tz())
+
+    # `scheduled_at < now` is a cheap, indexed over-approximation: an
+    # appointment that hasn't started certainly hasn't ended. The exact end is
+    # then computed per row, because `scheduled_at + duration_min` is not
+    # something postgrest can filter on.
+    candidates = execute_with_retry(
+        db.table("appointments")
+        .select("id,scheduled_at,duration_min")
+        .eq("status", "confirmed")
+        .lt("scheduled_at", now.isoformat())
+    ).data or []
+
+    elapsed = [
+        row["id"] for row in candidates
+        if to_clinic(datetime.fromisoformat(row["scheduled_at"]))
+        + timedelta(minutes=row.get("duration_min") or SLOT_STEP_MINUTES) <= now
+    ]
+    if not elapsed:
+        return 0
+
+    execute_with_retry(
+        db.table("appointments").update({"status": "completed"}).in_("id", elapsed)
+    )
+    return len(elapsed)

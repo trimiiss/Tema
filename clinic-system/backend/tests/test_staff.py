@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, call, patch
 from fastapi.testclient import TestClient
 from app.main import app
-from tests.conftest import make_chain, patch_db
+from tests.conftest import make_chain, patch_db, table_chain
 
 DOCTOR_ROW = {
     "id": "staff-new-001",
@@ -21,7 +21,7 @@ DOCTOR_ROW = {
 
 @contextmanager
 def make_client(token: str, role_name: str | None, tables: dict | None = None,
-                new_user_id: str = "auth-user-001"):
+                new_user_id: str = "auth-user-001", use_table_chain: bool = False):
     """Client whose mock DB dispatches per table name.
 
     `tables` maps table name -> data returned by .execute(); anything not listed
@@ -38,7 +38,11 @@ def make_client(token: str, role_name: str | None, tables: dict | None = None,
     # Chains for explicitly-passed tables exist up front, so a test can stub
     # them before issuing the request; the rest appear on first use, which lets
     # tests assert a table was never touched at all.
-    chains: dict[str, MagicMock] = {n: make_chain(tables[n]) for n in explicit}
+    # `use_table_chain` is for code paths that read one row with `.maybe_single()`
+    # and then write to the same table — `make_chain` hands the single-row read
+    # the whole list back, which the route then subscripts by column name.
+    _chain = table_chain if use_table_chain else make_chain
+    chains: dict[str, MagicMock] = {n: _chain(tables[n]) for n in explicit}
 
     def table(name):
         if name not in chains:
@@ -356,3 +360,114 @@ def test_doctor_cannot_book_appointment(admin_token):
             "scheduled_at": "2026-08-03T10:00:00",
         })
         assert r.status_code == 403
+
+
+# ---- Guest booking requests are receptionist-only to decide ----
+
+GUEST_REQUEST_ROW = {
+    **APPOINTMENT_ROW, "id": "appt-guest-001",
+    "status": "proposed", "source": "patient_portal",
+}
+
+
+def test_admin_cannot_decide_a_guest_booking_request(admin_token):
+    """Admins write appointments freely, but not this one transition.
+
+    Accepting a request submitted from the public `/book` page is the step
+    that puts a stranger's booking onto the schedule, and the front desk owns
+    it — the same split that makes the patient register receptionist-only.
+    """
+    with make_client(admin_token, "admin", {"appointments": [GUEST_REQUEST_ROW]},
+                     use_table_chain=True) as c:
+        for decision in ("confirmed", "cancelled"):
+            r = c.patch("/appointments/appt-guest-001", json={"status": decision})
+            assert r.status_code == 403
+            assert "receptionist" in r.json()["detail"]
+        # Refused before any write is attempted, not rolled back after one.
+        assert c.chains["appointments"].update.call_count == 0
+
+
+def test_receptionist_can_decide_a_guest_booking_request(receptionist_token):
+    with make_client(receptionist_token, "receptionist", {"appointments": [GUEST_REQUEST_ROW]},
+                     use_table_chain=True) as c:
+        c.chains["appointments"].update.return_value = make_chain(
+            [{**GUEST_REQUEST_ROW, "status": "confirmed"}]
+        )
+        r = c.patch("/appointments/appt-guest-001", json={"status": "confirmed"})
+        assert r.status_code == 200
+        assert r.json()["status"] == "confirmed"
+
+
+def test_admin_can_still_edit_a_guest_request_without_deciding_it(admin_token):
+    """The guard is on the accept/reject transition, not on the row.
+
+    An admin fixing a typo or reassigning the doctor is ordinary appointment
+    editing; only `status` moving to confirmed/cancelled is the receptionist's
+    call, so a blanket row-level block would be too wide.
+    """
+    with make_client(admin_token, "admin", {"appointments": [GUEST_REQUEST_ROW]},
+                     use_table_chain=True) as c:
+        c.chains["appointments"].update.return_value = make_chain([GUEST_REQUEST_ROW])
+        with patch("app.api.appointments.check_conflict"):
+            r = c.patch("/appointments/appt-guest-001", json={"notes": "called to verify"})
+        assert r.status_code == 200
+
+
+def test_staff_created_appointment_is_not_covered_by_the_guest_guard(admin_token):
+    """`status=proposed` alone is not a guest request — that is also the DB
+    default for a staff booking, so the guard keys on `source` too."""
+    staff_made = {**APPOINTMENT_ROW, "status": "proposed", "source": "staff"}
+    with make_client(admin_token, "admin", {"appointments": [staff_made]},
+                     use_table_chain=True) as c:
+        c.chains["appointments"].update.return_value = make_chain(
+            [{**staff_made, "status": "confirmed"}]
+        )
+        r = c.patch("/appointments/appt-new-001", json={"status": "confirmed"})
+        assert r.status_code == 200
+
+
+# ---- Date range filtering ----
+
+def test_same_day_range_includes_appointments_during_that_day(receptionist_token):
+    """`date_from == date_to` is how the dashboard asks for "today".
+
+    `lte("scheduled_at", date_to)` resolves to 00:00 on that day, so a range of
+    one day matched only an appointment booked at exactly midnight and the
+    dashboard reported zero appointments on a fully-booked day. The upper bound
+    must be the *following* midnight, half-open — same rule as
+    `report_service._day_bounds`.
+    """
+    with make_client(receptionist_token, "receptionist",
+                     {"appointments": [APPOINTMENT_ROW]}) as c:
+        r = c.get("/appointments/?date_from=2026-08-03&date_to=2026-08-03")
+        assert r.status_code == 200
+        chain = c.chains["appointments"]
+        upper = chain.lt.call_args
+        assert upper is not None, "expected a half-open upper bound, not lte()"
+        assert upper[0][0] == "scheduled_at"
+        # 2026-08-04T00:00 clinic-local, not 2026-08-03.
+        assert upper[0][1].startswith("2026-08-04T00:00")
+        chain.lte.assert_not_called()
+
+
+# ---- Agent run history is scoped to one login ----
+
+def test_agent_runs_can_be_scoped_to_the_current_login(receptionist_token):
+    """`since` narrows the transcript to one sitting.
+
+    Without it the chat page replays runs from days ago as though they were
+    part of the current conversation, and feeds that stale context back to the
+    agent as history.
+    """
+    with make_client(receptionist_token, "receptionist", {"agent_runs": []}) as c:
+        r = c.get("/agent/runs?since=2026-07-27T08:00:00%2B02:00")
+        assert r.status_code == 200
+        gte_args = [call[0] for call in c.chains["agent_runs"].gte.call_args_list]
+        assert ("created_at", "2026-07-27T08:00:00+02:00") in gte_args
+
+
+def test_agent_runs_without_since_returns_the_full_recent_list(receptionist_token):
+    with make_client(receptionist_token, "receptionist", {"agent_runs": []}) as c:
+        r = c.get("/agent/runs")
+        assert r.status_code == 200
+        c.chains["agent_runs"].gte.assert_not_called()

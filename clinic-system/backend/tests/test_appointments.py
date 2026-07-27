@@ -4,10 +4,11 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import patch, MagicMock
 from app.services.schedule_service import (
     check_conflict,
+    complete_elapsed_appointments,
     get_available_slots,
     to_clinic,
 )
-from tests.conftest import make_chain
+from tests.conftest import make_chain, patch_db
 
 
 def _make_db(data):
@@ -245,3 +246,77 @@ def test_double_booking_detected():
         result = check_conflict("staff-001", datetime(2026, 7, 24, 10, 0))
     assert result is not None
     assert result["id"] == "appt-existing"
+
+
+# ---- Auto-completing elapsed appointments ----
+
+def _sweep_db(rows):
+    """A db whose appointments table returns `rows` and records the update."""
+    from tests.conftest import make_chain
+    chain = make_chain(rows)
+    db = MagicMock()
+    db.table.side_effect = lambda name: chain
+    return db, chain
+
+
+def _clinic_now():
+    from app.services.schedule_service import clinic_tz
+    return datetime.now(clinic_tz())
+
+
+def test_confirmed_appointment_whose_end_passed_is_completed():
+    now = _clinic_now()
+    row = {"id": "a-1", "scheduled_at": (now - timedelta(hours=2)).isoformat(),
+           "duration_min": 30}
+    db, chain = _sweep_db([row])
+    with patch_db(db):
+        assert complete_elapsed_appointments() == 1
+    chain.update.assert_called_once_with({"status": "completed"})
+    chain.in_.assert_called_once_with("id", ["a-1"])
+
+
+def test_appointment_still_running_is_left_alone():
+    """The end of the appointment, not its start.
+
+    A 30-minute slot that began 10 minutes ago is still in progress; marking it
+    completed would close it while the patient is in the room.
+    """
+    now = _clinic_now()
+    row = {"id": "a-1", "scheduled_at": (now - timedelta(minutes=10)).isoformat(),
+           "duration_min": 30}
+    db, chain = _sweep_db([row])
+    with patch_db(db):
+        assert complete_elapsed_appointments() == 0
+    chain.update.assert_not_called()
+
+
+def test_sweep_only_considers_confirmed_appointments():
+    """A proposed appointment nobody accepted must not become "completed".
+
+    Its time passing is not evidence the visit happened — the sweep may only
+    make transitions `VALID_TRANSITIONS` already allows, and `proposed` goes to
+    confirmed or cancelled, never straight to completed.
+    """
+    now = _clinic_now()
+    db, chain = _sweep_db([{"id": "a-1", "scheduled_at": (now - timedelta(days=1)).isoformat(),
+                            "duration_min": 30}])
+    with patch_db(db):
+        complete_elapsed_appointments()
+    chain.eq.assert_any_call("status", "confirmed")
+
+
+def test_sweep_with_nothing_to_do_writes_nothing():
+    db, chain = _sweep_db([])
+    with patch_db(db):
+        assert complete_elapsed_appointments() == 0
+    chain.update.assert_not_called()
+
+
+def test_sweep_defaults_a_missing_duration():
+    """`duration_min` absent must not crash the sweep mid-list."""
+    now = _clinic_now()
+    row = {"id": "a-1", "scheduled_at": (now - timedelta(hours=5)).isoformat(),
+           "duration_min": None}
+    db, chain = _sweep_db([row])
+    with patch_db(db):
+        assert complete_elapsed_appointments() == 1

@@ -259,9 +259,17 @@ async def _invoke_tool(
             result = await result
     except TypeError as exc:
         # Almost always the model guessing a parameter name — recoverable.
-        return {"error": f"Wrong arguments for '{name}': {exc}"}, None
+        failure = {"error": f"Wrong arguments for '{name}': {exc}"}
+        on_step(spec.name, name, args, failure)
+        return failure, None
     except Exception as exc:  # noqa: BLE001 — surfaced to the model, not swallowed
-        return {"error": f"'{name}' failed: {exc}"}, None
+        # Logged as a step like any other call: a tool that raised is exactly
+        # what someone reading the trace needs to see. Returning early without
+        # `on_step` left a failing run indistinguishable from one where the
+        # model simply chose not to call anything.
+        failure = {"error": f"'{name}' failed: {exc}"}
+        on_step(spec.name, name, args, failure)
+        return failure, None
 
     payload = result if isinstance(result, dict) else {"value": result}
     on_step(spec.name, name, args, payload)

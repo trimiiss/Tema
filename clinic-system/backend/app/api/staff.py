@@ -55,7 +55,7 @@ def _create_login(db, email: str, password: str, full_name: str, role_name: str)
 
 
 @router.get("/", response_model=list[StaffOut])
-async def list_staff(
+def list_staff(
     include_inactive: bool = False,
     user: dict = Depends(require_roles("admin", "receptionist", "doctor")),
 ):
@@ -68,7 +68,7 @@ async def list_staff(
 
 
 @router.get("/accounts")
-async def list_accounts(user: dict = Depends(require_roles("admin"))):
+def list_accounts(user: dict = Depends(require_roles("admin"))):
     """Every login account with its assigned roles.
 
     Declared before `/{staff_id}/…` so "accounts" is never read as an id.
@@ -100,7 +100,7 @@ async def list_accounts(user: dict = Depends(require_roles("admin"))):
 
 
 @router.post("/", response_model=StaffOut, status_code=201)
-async def create_staff(
+def create_staff(
     body: StaffCreate,
     user: dict = Depends(require_roles("admin")),
 ):
@@ -154,7 +154,7 @@ async def create_staff(
 
 
 @router.patch("/{staff_id}", response_model=StaffOut)
-async def update_staff(
+def update_staff(
     staff_id: str,
     body: StaffUpdate,
     user: dict = Depends(require_roles("admin")),
@@ -171,7 +171,7 @@ async def update_staff(
 
 
 @router.delete("/{staff_id}", status_code=204)
-async def deactivate_staff(
+def deactivate_staff(
     staff_id: str,
     user: dict = Depends(require_roles("admin")),
 ):
@@ -184,7 +184,7 @@ async def deactivate_staff(
 
 
 @router.get("/{staff_id}/schedules", response_model=list[ScheduleOut])
-async def list_schedules(
+def list_schedules(
     staff_id: str,
     user: dict = Depends(require_roles("admin", "receptionist", "doctor")),
 ):
@@ -196,7 +196,7 @@ async def list_schedules(
 
 
 @router.put("/{staff_id}/schedules", response_model=list[ScheduleOut])
-async def replace_schedules(
+def replace_schedules(
     staff_id: str,
     entries: list[ScheduleEntry],
     user: dict = Depends(require_roles("admin")),
@@ -226,7 +226,7 @@ async def replace_schedules(
 
 
 @services_router.get("/", response_model=list[ServiceOut])
-async def list_services(
+def list_services(
     user: dict = Depends(require_roles("admin", "receptionist", "doctor")),
 ):
     db = get_db()

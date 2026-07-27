@@ -50,7 +50,7 @@ def _require_session_id(session_id: str) -> str:
 # ---- Read-only reference data — no session needed ----
 
 @router.get("/doctors", response_model=list[PublicDoctorOut])
-async def list_doctors():
+def list_doctors():
     db = get_db()
     return execute_with_retry(
         db.table("staff").select("id,full_name,specialty,bio").eq("active", True)
@@ -58,12 +58,12 @@ async def list_doctors():
 
 
 @router.get("/reasons", response_model=list[PublicReasonOut])
-async def list_reasons():
+def list_reasons():
     return triage.list_reasons()
 
 
 @router.get("/slots", response_model=PublicSlotsOut)
-async def slots(staff_id: str, date: str, duration_min: int = 30):
+def slots(staff_id: str, date: str, duration_min: int = 30):
     """Deterministic fallback slot picker for the UI's own doctor/day pickers,
     independent of anything the chat has said this turn."""
     try:
@@ -77,7 +77,7 @@ async def slots(staff_id: str, date: str, duration_min: int = 30):
 
 @router.post("/booking/chat", response_model=AgentRunOut, status_code=201,
              dependencies=[Depends(enforce_rate_limit)])
-async def start_chat(body: PublicChatRequest):
+def start_chat(body: PublicChatRequest):
     session_id = _require_session_id(body.session_id)
     message = (body.message or "").strip()
     if not message:
@@ -100,19 +100,38 @@ async def start_chat(body: PublicChatRequest):
 
 
 @router.get("/booking/runs", response_model=list[AgentRunOut])
-async def list_runs(session_id: str = Query(...)):
+def list_runs(session_id: str = Query(...)):
     session_id = _require_session_id(session_id)
     db = get_db()
     runs = execute_with_retry(
         db.table("agent_runs").select("*").eq("session_id", session_id)
         .order("created_at", desc=True).limit(20)
     ).data
-    result = []
-    for run in runs:
-        steps = execute_with_retry(db.table("agent_steps").select("*").eq("run_id", run["id"]).order("timestamp")).data
-        gates = execute_with_retry(db.table("approval_gates").select("*").eq("run_id", run["id"])).data
-        result.append({**run, "steps": steps, "gates": gates})
-    return result
+    if not runs:
+        return []
+
+    # Three queries rather than 1 + 2N — same reason as `agents.list_runs`, and
+    # it matters more here: this is the first request a visitor's browser makes
+    # on the public booking page.
+    run_ids = [run["id"] for run in runs]
+    steps = execute_with_retry(
+        db.table("agent_steps").select("*").in_("run_id", run_ids).order("timestamp")
+    ).data or []
+    gates = execute_with_retry(
+        db.table("approval_gates").select("*").in_("run_id", run_ids)
+    ).data or []
+
+    steps_by_run: dict[str, list] = {}
+    for step in steps:
+        steps_by_run.setdefault(step["run_id"], []).append(step)
+    gates_by_run: dict[str, list] = {}
+    for gate in gates:
+        gates_by_run.setdefault(gate["run_id"], []).append(gate)
+
+    return [
+        {**run, "steps": steps_by_run.get(run["id"], []), "gates": gates_by_run.get(run["id"], [])}
+        for run in runs
+    ]
 
 
 def _load_own_run(db, run_id: str, session_id: str) -> dict:
@@ -161,7 +180,7 @@ async def stream_run(run_id: str, session_id: str = Query(...)):
 
 
 @router.post("/booking/confirm/{gate_id}", dependencies=[Depends(enforce_rate_limit)])
-async def confirm_booking(gate_id: str, body: PublicConfirmRequest):
+def confirm_booking(gate_id: str, body: PublicConfirmRequest):
     session_id = _require_session_id(body.session_id)
     if body.decision not in ("approved", "rejected"):
         raise HTTPException(status_code=400, detail="Decision must be 'approved' or 'rejected'")

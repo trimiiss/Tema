@@ -152,7 +152,10 @@ export const agentApi = {
   run: (inputText: string) =>
     request<any>("/agent/run", { method: "POST", body: JSON.stringify({ input_text: inputText }) }),
   getRun: (id: string) => request<any>(`/agent/runs/${id}`),
-  listRuns: () => request<any[]>("/agent/runs"),
+  // `since` scopes the history to the current login — see `sessionStart` in
+  // the agent-chat page for why a conversation shouldn't span logins.
+  listRuns: (since = "") =>
+    request<any[]>(`/agent/runs${since ? `?since=${encodeURIComponent(since)}` : ""}`),
   decide: (gateId: string, decision: "approved" | "rejected") =>
     request<any>(`/agent/approve/${gateId}`, { method: "POST", body: JSON.stringify({ decision }) }),
   // Server-Sent Events over fetch (native EventSource can't send an

@@ -34,6 +34,9 @@ export default function AppointmentsPage() {
   const canManage = roles.some(r => r === "admin" || r === "receptionist");
   // The patient register is receptionist-owned; admins book but don't add patients.
   const canAddPatients = roles.includes("receptionist");
+  // Accepting/rejecting a guest's own booking request is receptionist-only —
+  // narrower than canManage, which also covers admin's regular appointment writes.
+  const canDecideRequests = roles.includes("receptionist");
 
   useEffect(() => {
     usersApi.me().then(me => setRoles(me.roles)).catch(() => setRoles([]));
@@ -158,7 +161,7 @@ export default function AppointmentsPage() {
                       </p>
                       {a.notes && <p className="text-xs text-gray-400 mt-1 whitespace-pre-wrap">{a.notes}</p>}
                     </div>
-                    {canManage && (
+                    {canDecideRequests ? (
                       <div className="flex gap-2 shrink-0">
                         <button
                           onClick={() => handleStatusChange(a.id, "confirmed")}
@@ -179,7 +182,9 @@ export default function AppointmentsPage() {
                           Edit
                         </button>
                       </div>
-                    )}
+                    ) : canManage ? (
+                      <p className="text-xs text-gray-400 shrink-0">Only a receptionist can accept or reject this</p>
+                    ) : null}
                   </div>
                 ))}
               </div>

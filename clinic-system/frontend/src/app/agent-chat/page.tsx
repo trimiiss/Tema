@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import AppLayout from "@/components/layout/AppLayout";
 import { agentApi, usersApi } from "@/lib/api";
+import { sessionStart } from "@/lib/session";
 import toast from "react-hot-toast";
 
 // `run` is set only on messages rebuilt from history — it carries the steps and
@@ -187,14 +188,22 @@ export default function AgentChatPage() {
   // back dropped it — but the backend has stored every run all along, keyed by
   // user. Reading it back is what makes the history survive navigation, a
   // reload and a different tab alike, rather than just an in-app route change.
+  //
+  // Scoped to the *current login*, though: replaying a run from three days ago
+  // presents it as part of this conversation, so the user reads answers to
+  // questions they don't remember asking. `sessionStart` is when this login
+  // began, so signing out and back in starts a clean thread while navigation
+  // and reloads within one sitting still restore everything.
   useEffect(() => {
     let cancelled = false;
-    agentApi.listRuns()
-      // History arrives asynchronously, so it must never overwrite a message
-      // the user managed to send while it was in flight.
-      .then(runs => { if (!cancelled) setMessages(prev => (prev.length ? prev : messagesFromRuns(runs))); })
-      .catch(() => { /* a fresh transcript is a fine fallback */ })
-      .finally(() => { if (!cancelled) setLoadingHistory(false); });
+    sessionStart().then(since =>
+      agentApi.listRuns(since)
+        // History arrives asynchronously, so it must never overwrite a message
+        // the user managed to send while it was in flight.
+        .then(runs => { if (!cancelled) setMessages(prev => (prev.length ? prev : messagesFromRuns(runs))); })
+        .catch(() => { /* a fresh transcript is a fine fallback */ })
+        .finally(() => { if (!cancelled) setLoadingHistory(false); })
+    );
     return () => { cancelled = true; };
   }, []);
 

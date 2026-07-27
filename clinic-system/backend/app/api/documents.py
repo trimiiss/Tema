@@ -14,7 +14,7 @@ router = APIRouter(prefix="/documents", tags=["documents"])
 
 
 @router.get("/", response_model=list[DocumentOut])
-async def list_documents(
+def list_documents(
     patient_id: str = "",
     user: dict = Depends(require_roles("admin", "receptionist", "doctor")),
 ):
@@ -68,7 +68,7 @@ async def upload_document(
 
 
 @router.get("/{doc_id}", response_model=DocumentOut)
-async def get_document(
+def get_document(
     doc_id: str,
     user: dict = Depends(require_roles("admin", "receptionist", "doctor")),
 ):
@@ -80,7 +80,7 @@ async def get_document(
 
 
 @router.get("/{doc_id}/fields", response_model=list[DocumentFieldOut])
-async def get_document_fields(
+def get_document_fields(
     doc_id: str,
     user: dict = Depends(require_roles("admin", "receptionist", "doctor")),
 ):
@@ -90,7 +90,7 @@ async def get_document_fields(
 
 
 @router.post("/{doc_id}/verify")
-async def verify_document(
+def verify_document(
     doc_id: str,
     user: dict = Depends(require_roles("admin", "receptionist")),
 ):
@@ -102,7 +102,7 @@ async def verify_document(
 
 
 @router.post("/{doc_id}/reject")
-async def reject_document(
+def reject_document(
     doc_id: str,
     user: dict = Depends(require_roles("admin", "receptionist")),
 ):
