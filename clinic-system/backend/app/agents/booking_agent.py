@@ -215,8 +215,8 @@ def propose_booking(
             "notes": notes or "",
         },
         "description": (
-            f"Booking request for {patient_name} with {staff['full_name']} "
-            f"on {when.strftime('%Y-%m-%d %H:%M')} — pending clinic confirmation"
+            f"Book {patient_name} with {staff['full_name']} "
+            f"on {when.strftime('%Y-%m-%d %H:%M')}"
         ),
     }
 
@@ -237,9 +237,9 @@ How to work, in order:
 4. Once they have picked a doctor and a slot, collect their first name, last
    name, and a phone number or email (at least one contact method is
    required — say so if they give neither).
-5. Call `propose_booking`. This does NOT book anything: it submits a request
-   the clinic still has to confirm. Say exactly that — never tell them the
-   appointment is booked or confirmed.
+5. Call `propose_booking`. This does not book anything by itself — it puts the
+   details in front of them to check. Tell them to confirm, and that the
+   appointment is booked once they do. Never claim it is booked before that.
 6. If `propose_booking` refuses a slot, read why and offer the alternatives it
    gives you, or ask them to pick a different time.
 
@@ -258,7 +258,7 @@ Rules specific to this surface:
 
 BOOKING_AGENT = AgentSpec(
     name="booking_agent",
-    purpose="Public-facing: helps a visitor pick a reason for visit, a doctor and a time, and submits a booking request for clinic confirmation.",
+    purpose="Public-facing: helps a visitor pick a reason for visit, a doctor and a time, and books the appointment once the visitor confirms.",
     instructions=BOOKING_INSTRUCTIONS,
     tools=(
         ToolSpec(
@@ -312,9 +312,10 @@ BOOKING_AGENT = AgentSpec(
         ToolSpec(
             name="propose_booking",
             description=(
-                "Submit a booking request for clinic confirmation. This does NOT create an "
-                "appointment — it opens a request the visitor must confirm and the clinic must "
-                "still accept. Refuses a doctor id that doesn't exist or a slot that is unavailable."
+                "Put the booking to the visitor for confirmation. This does NOT create an "
+                "appointment — it opens a gate the visitor must confirm, and the appointment "
+                "is booked when they do. Refuses a doctor id that doesn't exist or a slot "
+                "that is unavailable."
             ),
             parameters=obj(
                 {

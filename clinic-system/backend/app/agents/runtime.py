@@ -46,11 +46,25 @@ MAX_TOOL_RESULT_CHARS = 4000
 
 _oai: Optional[AsyncOpenAI] = None
 
+# A rate limit or a transient 5xx used to kill the whole run: nothing between
+# the model call and `run_orchestrator`'s catch-all handles it, so one 429 on
+# hop 3 discarded the answers from hops 1 and 2. The SDK already knows how to
+# back off on 429/5xx/connection errors — it just defaults to two tries. The
+# timeout matters as much as the retries: without one a hung connection stalls
+# the run until the client gives up, and an agent turn that has not answered in
+# 30s is not going to.
+OPENAI_MAX_RETRIES = 3
+OPENAI_TIMEOUT_S = 30.0
+
 
 def get_client() -> AsyncOpenAI:
     global _oai
     if _oai is None:
-        _oai = AsyncOpenAI(api_key=settings.openai_api_key)
+        _oai = AsyncOpenAI(
+            api_key=settings.openai_api_key,
+            max_retries=OPENAI_MAX_RETRIES,
+            timeout=OPENAI_TIMEOUT_S,
+        )
     return _oai
 
 

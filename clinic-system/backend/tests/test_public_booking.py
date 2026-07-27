@@ -195,7 +195,10 @@ def test_propose_booking_proposes_a_workable_slot_without_touching_patients(clin
     assert result["action"]["action"] == "create_booking"
     assert result["action"]["staff_name"] == "Dr. Arben Hoxha"
     assert result["action"]["first_name"] == "Arta"
-    assert "pending clinic confirmation" in result["description"]
+    # The card the visitor confirms is written from the rows just read, not
+    # from anything the model supplied.
+    assert "Dr. Arben Hoxha" in result["description"]
+    assert "2026-08-03 10:00" in result["description"]
     # Never touches `patients` — matching/creation happens only after the
     # visitor confirms, in `public_orchestrator.resume_public_booking`.
     assert clinic_db.table("patients").insert.call_count == 0
@@ -306,19 +309,26 @@ async def test_a_workable_booking_opens_a_gate_and_writes_nothing(clinic_db):
 
 
 @pytest.mark.asyncio
-async def test_approved_booking_matches_the_patient_and_lands_as_proposed():
+async def test_approved_booking_matches_the_patient_and_lands_confirmed():
+    """A visitor who confirms the gate is booked, not queued for the clinic.
+
+    The slot was re-derived from the database by `propose_booking`'s validators
+    before the gate was ever shown, so there is nothing left for a receptionist
+    to check. `source` stays 'patient_portal' so staff can still tell where the
+    booking came from.
+    """
     from app.agents import public_orchestrator as po
 
     gate = {
         "id": "gate-1", "run_id": "run-3",
-        "action_description": "Booking request for Arta Berisha with Dr. Arben Hoxha",
+        "action_description": "Book Arta Berisha with Dr. Arben Hoxha",
         "payload": {
             "action": "create_booking", "first_name": "Arta", "last_name": "Berisha",
             "phone": "044111222", "email": "", "staff_id": "s-1", "staff_name": "Dr. Arben Hoxha",
             "scheduled_at": MONDAY_10, "duration_min": 30, "reason": "general_checkup", "notes": "",
         },
     }
-    created_appt = {"id": "appt-new", "status": "proposed", "source": "patient_portal"}
+    created_appt = {"id": "appt-new", "status": "confirmed", "source": "patient_portal"}
     appts_chain = make_chain([created_appt])
     db = MagicMock()
     db.table.side_effect = lambda name: appts_chain if name == "appointments" else make_chain([])
@@ -334,7 +344,7 @@ async def test_approved_booking_matches_the_patient_and_lands_as_proposed():
 
     matcher.assert_called_once_with(first_name="Arta", last_name="Berisha", phone="044111222", email="")
     inserted = appts_chain.insert.call_args.args[0]
-    assert inserted["status"] == "proposed"
+    assert inserted["status"] == "confirmed"
     assert inserted["source"] == "patient_portal"
     assert inserted["created_by"] is None
     assert inserted["patient_id"] == "p-new"

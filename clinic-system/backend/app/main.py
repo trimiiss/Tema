@@ -8,6 +8,9 @@ from app.core import tasks
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Sync endpoints run in a threadpool with no event loop of their own, so
+    # `tasks.spawn` needs a handle on this one to schedule agent runs onto.
+    tasks.capture_loop()
     yield
     # Agent runs and document processing are fired off in the background; give
     # them a moment to finish so the process can exit cleanly. Without this the

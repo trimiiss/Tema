@@ -57,14 +57,16 @@ export default function AppointmentsPage() {
 
   useEffect(() => { load(); }, [dateFrom, dateTo, statusFilter, sort]);
 
-  // Separate from the main table: `status=proposed` alone also matches an
-  // appointment a receptionist just created and hasn't confirmed yet (that's
-  // the DB's default status too), so the queue of *visitor* submissions is
-  // its own fetch filtered on `source`, not a view of the same list above.
+  // Online bookings confirm themselves now, so this is no longer an approval
+  // queue — it is the only place staff can see *which* appointments arrived
+  // through the public chat, since the main table mixes them in with everything
+  // a receptionist entered. Hence no `status` filter: a portal booking is
+  // `confirmed` from the moment the visitor confirms it, and filtering on
+  // `proposed` would leave this permanently empty.
   async function loadRequests() {
     setRequestsLoading(true);
     try {
-      const data = await appointmentsApi.list({ source: "patient_portal", status: "proposed", sort: "earliest" });
+      const data = await appointmentsApi.list({ source: "patient_portal", sort: "earliest" });
       setRequests(data);
     } finally {
       setRequestsLoading(false);
@@ -117,12 +119,13 @@ export default function AppointmentsPage() {
           />
         )}
 
-        {/* Tabs — booking-chat submissions land as source='patient_portal' and
-            need review separately from the general table above. */}
+        {/* Tabs — booking-chat submissions land as source='patient_portal'.
+            They are booked, not pending, so this tab is for visibility rather
+            than review. */}
         <div className="flex gap-2 border-b border-gray-200">
           {([
             { key: "all", label: "All Appointments" },
-            { key: "requests", label: `Booking Requests${requests.length ? ` (${requests.length})` : ""}` },
+            { key: "requests", label: `Online Bookings${requests.length ? ` (${requests.length})` : ""}` },
           ] as const).map(t => (
             <button
               key={t.key}
@@ -143,13 +146,18 @@ export default function AppointmentsPage() {
             {requestsLoading ? (
               <div className="p-8 text-center text-gray-400">Loading...</div>
             ) : requests.length === 0 ? (
-              <div className="p-8 text-center text-gray-400">No pending booking requests</div>
+              <div className="p-8 text-center text-gray-400">Nothing booked through the website yet</div>
             ) : (
               <div className="divide-y divide-gray-100">
                 {requests.map(a => (
                   <div key={a.id} className="p-4 flex flex-wrap items-start gap-4">
                     <div className="flex-1 min-w-[16rem]">
-                      <p className="font-medium text-gray-900">{a.patient_name || "Unknown patient"}</p>
+                      <div className="flex items-center gap-2">
+                        <p className="font-medium text-gray-900">{a.patient_name || "Unknown patient"}</p>
+                        <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_COLORS[a.status] || "bg-gray-100 text-gray-600"}`}>
+                          {a.status}
+                        </span>
+                      </div>
                       <p className="text-xs text-gray-500 mt-0.5">
                         {a.patient_phone && <span>📞 {a.patient_phone} </span>}
                         {a.patient_email && <span>✉️ {a.patient_email}</span>}
@@ -161,20 +169,35 @@ export default function AppointmentsPage() {
                       </p>
                       {a.notes && <p className="text-xs text-gray-400 mt-1 whitespace-pre-wrap">{a.notes}</p>}
                     </div>
-                    {canDecideRequests ? (
+                    {canManage ? (
                       <div className="flex gap-2 shrink-0">
-                        <button
-                          onClick={() => handleStatusChange(a.id, "confirmed")}
-                          className="px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white text-xs font-medium rounded-lg transition"
-                        >
-                          Confirm
-                        </button>
-                        <button
-                          onClick={() => handleStatusChange(a.id, "cancelled")}
-                          className="px-3 py-1.5 bg-red-50 hover:bg-red-100 text-red-700 text-xs font-medium rounded-lg transition"
-                        >
-                          Reject
-                        </button>
+                        {/* Accept/reject survives only for rows submitted before
+                            online bookings started confirming themselves; new
+                            ones arrive 'confirmed' and skip straight to Edit. */}
+                        {a.status === "proposed" && canDecideRequests && (
+                          <>
+                            <button
+                              onClick={() => handleStatusChange(a.id, "confirmed")}
+                              className="px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white text-xs font-medium rounded-lg transition"
+                            >
+                              Confirm
+                            </button>
+                            <button
+                              onClick={() => handleStatusChange(a.id, "cancelled")}
+                              className="px-3 py-1.5 bg-red-50 hover:bg-red-100 text-red-700 text-xs font-medium rounded-lg transition"
+                            >
+                              Reject
+                            </button>
+                          </>
+                        )}
+                        {a.status === "confirmed" && (
+                          <button
+                            onClick={() => handleStatusChange(a.id, "cancelled")}
+                            className="px-3 py-1.5 bg-red-50 hover:bg-red-100 text-red-700 text-xs font-medium rounded-lg transition"
+                          >
+                            Cancel
+                          </button>
+                        )}
                         <button
                           onClick={() => setEditing(a)}
                           className="px-3 py-1.5 text-gray-500 hover:bg-gray-50 text-xs font-medium rounded-lg transition"
@@ -182,8 +205,6 @@ export default function AppointmentsPage() {
                           Edit
                         </button>
                       </div>
-                    ) : canManage ? (
-                      <p className="text-xs text-gray-400 shrink-0">Only a receptionist can accept or reject this</p>
                     ) : null}
                   </div>
                 ))}

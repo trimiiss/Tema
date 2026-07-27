@@ -233,7 +233,7 @@ def test_inverted_schedule_entry_rejected(admin_token):
 APPOINTMENT_ROW = {
     "id": "appt-new-001", "patient_id": "pat-1", "staff_id": "staff-1",
     "service_id": None, "scheduled_at": "2026-08-03T10:00:00+00:00",
-    "duration_min": 30, "status": "proposed", "notes": None,
+    "duration_min": 30, "status": "confirmed", "notes": None,
     "created_at": "2026-07-25T09:00:00+00:00",
 }
 
@@ -261,6 +261,24 @@ def test_admin_can_book_appointment_manually(admin_token):
                 "scheduled_at": "2026-08-03T10:00:00", "duration_min": 30,
             })
         assert r.status_code == 201
+
+
+def test_manual_booking_lands_confirmed_not_proposed(receptionist_token):
+    """Staff booking the slot themselves is already the acceptance.
+
+    The DB column defaults to 'proposed', which would make a receptionist
+    confirm their own booking a second time. 'proposed' is for guest requests
+    (source='patient_portal') nobody has decided yet — pinned by
+    `test_public_booking.py::test_approved_booking_matches_the_patient_and_lands_as_proposed`.
+    """
+    with make_client(receptionist_token, "receptionist",
+                     {"appointments": [APPOINTMENT_ROW]}) as c:
+        with patch("app.api.appointments.check_conflict", return_value=None):
+            c.post("/appointments/", json={
+                "patient_id": "pat-1", "staff_id": "staff-1",
+                "scheduled_at": "2026-08-03T10:00:00", "duration_min": 30,
+            })
+        assert c.chains["appointments"].insert.call_args[0][0]["status"] == "confirmed"
 
 
 def test_manual_booking_rejects_conflicting_slot(receptionist_token):

@@ -34,7 +34,8 @@ from typing import Any, Dict, List, Optional, TypedDict
 from langgraph.graph import END, StateGraph
 from openai import AsyncOpenAI
 
-from app.agents.runtime import AgentOutcome, AgentSpec, run_agent_loop
+from app.agents import runtime
+from app.agents.runtime import AgentOutcome, AgentSpec, WriteToolExposed, run_agent_loop
 from app.core.config import settings
 from app.core.database import get_db, execute_with_retry
 from app.core.audit import log_action
@@ -68,7 +69,14 @@ def _clinic_today():
 def _client() -> AsyncOpenAI:
     global _oai
     if _oai is None:
-        _oai = AsyncOpenAI(api_key=settings.openai_api_key)
+        # Same retry/timeout reasoning as `runtime.get_client` — the supervisor
+        # is the first model call every run makes, so an unretried 429 here
+        # fails the run before any agent has done a thing.
+        _oai = AsyncOpenAI(
+            api_key=settings.openai_api_key,
+            max_retries=runtime.OPENAI_MAX_RETRIES,
+            timeout=runtime.OPENAI_TIMEOUT_S,
+        )
     return _oai
 
 
@@ -205,15 +213,36 @@ async def node_supervisor(state: OrchestratorState) -> OrchestratorState:
     done = [{"agent": a["agent"], "answer": a["text"]} for a in state["answers"]]
     context = json.dumps({"user_request": state["input_text"], "work_done_so_far": done}, default=str)
 
-    response = await _client().chat.completions.create(
-        model="gpt-4o",
-        messages=[
-            {"role": "system", "content": SUPERVISOR_PROMPT.format(directory=_directory())},
-            {"role": "user", "content": context},
-        ],
-        response_format={"type": "json_object"},
-        max_tokens=300,
-    )
+    try:
+        response = await _client().chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": SUPERVISOR_PROMPT.format(directory=_directory())},
+                {"role": "user", "content": context},
+            ],
+            response_format={"type": "json_object"},
+            max_tokens=300,
+        )
+    except Exception as exc:  # noqa: BLE001
+        # Routing is the one thing that cannot degrade to "pick something and
+        # hope": dispatching an agent on a guess is worse than not dispatching.
+        # So a routing call that fails ends the run at `finish`, keeping
+        # whatever earlier hops produced. The note is appended rather than left
+        # to `finalize`'s empty-answers default, which says "I couldn't work out
+        # what to do with that" — true of an out-of-scope request, misleading
+        # about an outage.
+        _log_step(run_id, "supervisor", "routing_failed",
+                  {"request": state["input_text"]}, {"error": f"{type(exc).__name__}: {exc}"})
+        return {
+            **state,
+            "active_agent": "finish",
+            "answers": state["answers"] + [{
+                "agent": "supervisor",
+                "text": ("I couldn't reach the assistant service just now, so I wasn't able "
+                         "to work on this. Nothing was written — please try again."),
+            }],
+        }
+
     try:
         parsed = json.loads(response.choices[0].message.content or "{}")
     except json.JSONDecodeError:
@@ -256,9 +285,34 @@ async def _run_agent(state: OrchestratorState, agent_name: str) -> OrchestratorS
         f"Today is {clinic_today().isoformat()}. "
         f"The user's original request was: {state['input_text']!r}."
     )
-    outcome: AgentOutcome = await run_agent_loop(
-        spec, task=state["task"] or state["input_text"], context=context, on_step=on_step,
-    )
+    try:
+        outcome: AgentOutcome = await run_agent_loop(
+            spec, task=state["task"] or state["input_text"], context=context, on_step=on_step,
+        )
+    except WriteToolExposed:
+        # The one failure that must stay fatal. It means a `@mutating` function
+        # reached a model's tool set, and the approval gate is the thesis's
+        # core claim — degrading that to "sorry, something went wrong" would
+        # hide exactly the bug nobody can afford to miss.
+        raise
+    except Exception as exc:  # noqa: BLE001
+        # Anything else — an OpenAI 429 that outlived its retries, a timeout, a
+        # malformed response — ends this agent's turn rather than the run. The
+        # graph still reaches `finalize`, so answers from earlier hops survive
+        # instead of being discarded by `run_orchestrator`'s catch-all, and the
+        # supervisor gets the chance to try a different agent.
+        _log_step(run_id, agent_name, "agent_failed",
+                  {"task": state["task"]}, {"error": f"{type(exc).__name__}: {exc}"})
+        return {
+            **state,
+            "hops": state["hops"] + 1,
+            "active_agent": None,
+            "answers": state["answers"] + [{
+                "agent": agent_name,
+                "text": (f"The {agent_name} could not complete this — it stopped with an "
+                         f"unexpected error. Nothing was written."),
+            }],
+        }
 
     hops = state["hops"] + 1
 

@@ -15,9 +15,12 @@ against the public endpoints.
 
 `resume_public_booking` is the only function in this module — and the only one
 anywhere reachable from the public API — that writes to `patients` or
-`appointments`. It runs only after the visitor themselves confirms the gate;
-the appointment it creates still lands as `status="proposed"`, so the clinic
-has the last word regardless.
+`appointments`. It runs only after the visitor themselves confirms the gate,
+and the appointment it creates lands as `status="confirmed"`: a visitor who
+picked a slot the validators already checked is booked, not queued. The slot
+was re-derived from the database at proposal time, so nothing here rests on
+what the model claimed. `source="patient_portal"` is still recorded, so staff
+can always tell a self-service booking apart from one they entered.
 """
 from __future__ import annotations
 
@@ -253,7 +256,7 @@ async def resume_public_booking(run_id: str, gate_id: str, decision: str) -> Non
             "staff_id": payload["staff_id"],
             "scheduled_at": to_clinic(datetime.fromisoformat(payload["scheduled_at"])).isoformat(),
             "duration_min": payload.get("duration_min", 30),
-            "status": "proposed",
+            "status": "confirmed",
             "source": "patient_portal",
             "notes": (
                 f"[Patient portal] Reason: {payload.get('reason') or 'not specified'}. "
@@ -268,15 +271,14 @@ async def resume_public_booking(run_id: str, gate_id: str, decision: str) -> Non
         })
 
         # Built from the row just written, not from `action_description` — that
-        # string is phrased for the staff approval card ("Booking request for X
-        # with Y … pending clinic confirmation") and reads as nonsense once it
+        # string is phrased for a staff-side card and reads as nonsense once it
         # is spliced into a sentence addressed to the visitor themselves.
         when = to_clinic(datetime.fromisoformat(payload["scheduled_at"]))
         result = {
             "message": (
-                f"Thanks — your request to see {payload.get('staff_name', 'the doctor')} on "
-                f"{when.strftime('%A %d %B at %H:%M')} has been sent to the clinic. "
-                "You'll be contacted to confirm it; it isn't booked yet."
+                f"You're booked with {payload.get('staff_name', 'the doctor')} on "
+                f"{when.strftime('%A %d %B at %H:%M')}. "
+                "Call the clinic if you need to change or cancel it."
             ),
             "appointment": appointment,
             "patient_created": match["created"],

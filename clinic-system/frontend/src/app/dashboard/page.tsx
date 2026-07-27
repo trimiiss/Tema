@@ -104,6 +104,10 @@ export default function DashboardPage() {
     sessionStart().then(since => Promise.allSettled([
       appointmentsApi.list({ date_from: today, date_to: today, sort: "earliest" }),
       agentApi.listRuns(since),
+      // Still keyed on 'proposed' — unlike the Online Bookings tab on
+      // /appointments, this is an action queue, and online bookings now
+      // confirm themselves. It surfaces only rows submitted before that
+      // change, so it empties itself out and stays at "all caught up".
       appointmentsApi.list({ source: "patient_portal", status: "proposed", sort: "earliest" }),
       patientsApi.list(),
       usersApi.me(),

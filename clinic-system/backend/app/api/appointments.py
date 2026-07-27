@@ -128,6 +128,14 @@ def create_appointment(
     data = body.model_dump()
     # Naive input means clinic wall-clock; store an unambiguous instant.
     data["scheduled_at"] = to_clinic(data["scheduled_at"]).isoformat()
+    # Booked confirmed, not at the DB default 'proposed'. A staff member filling
+    # in this form has already agreed the slot with the patient, so leaving it
+    # 'proposed' made them confirm their own booking a second time. 'proposed'
+    # stays reserved for what an outsider asked for and nobody has accepted yet:
+    # guest submissions (source='patient_portal'), which the Booking Requests
+    # queue exists to decide. The agent path likewise inserts 'confirmed', but
+    # only after a human cleared its approval gate.
+    data["status"] = "confirmed"
     data["created_by"] = user["id"]
     data["updated_by"] = user["id"]
     resp = db.table("appointments").insert(data).execute()
