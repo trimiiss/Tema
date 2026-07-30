@@ -1,0 +1,83 @@
+# Render Blueprint for the clinic system's FastAPI backend.
+#
+# Why this file exists: the repository root is not the application root. The
+# backend lives at `clinic-system/backend`, so a build started from the repo
+# root looks for `requirements.txt` beside this file, does not find it, and
+# fails — which is exactly the error a manually-configured service hits.
+# `rootDir` below is the fix, and keeping it in version control means the
+# setting cannot be lost the next time the service is recreated.
+#
+# The frontend is deployed separately on Vercel and is deliberately not
+# described here.
+
+services:
+  - type: web
+    name: clinic-backend
+    # Docker, not the `python` runtime, and not by preference: `ocr_service`
+    # shells out to Tesseract for scanned images (PNG/JPG/TIFF), which is an
+    # apt package the Python runtime has no way to install. On `runtime:
+    # python` the app still starts and PDFs still work — pdfplumber is pure
+    # Python — so the failure is invisible until someone uploads a photograph
+    # of a referral and OCR returns an error string instead of text.
+    # `backend/Dockerfile` already installs tesseract-ocr.
+    runtime: docker
+    rootDir: clinic-system/backend
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+
+    # Frankfurt keeps the backend in the same continent as the Supabase project
+    # (eu-west-1). Every request this service serves makes at least one round
+    # trip to Postgres, so crossing the Atlantic twice per request is felt.
+    region: frankfurt
+
+    # The free plan idles the service after ~15 minutes without traffic and
+    # cold-starts it on the next request. Two things in this codebase assume a
+    # process that keeps running:
+    #
+    #   - agent runs are in-process asyncio tasks (`core/tasks.spawn`), with no
+    #     queue behind them, so a run in flight when the service idles is lost
+    #     and the chat waits forever on a run that no longer exists;
+    #   - the public rate limiter (`core/ratelimit`) is an in-memory dict, so
+    #     every cold start resets the per-IP budget protecting the OpenAI key.
+    #
+    # Fine for a demo you drive yourself; change to `starter` before anything
+    # that has to stay reliably up, such as a live defence.
+    plan: free
+
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+
+    # Only rebuild when the backend actually changes — a push that touches only
+    # the frontend or the thesis text should not redeploy the API.
+    buildFilter:
+      paths:
+        - clinic-system/backend/**
+
+    envVars:
+      # All secrets, so all `sync: false`: Render prompts for them once in the
+      # dashboard and never reads them from this file. Nothing here should ever
+      # hold a real key — this file is committed.
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_JWT_SECRET
+        sync: false
+
+      # The browser origin allowed to call this API. Must be the deployed
+      # frontend's exact origin, scheme included and no trailing slash —
+      # e.g. https://clinic-system.vercel.app. Get this wrong and every request
+      # from the site fails CORS while the backend itself looks perfectly
+      # healthy, which is a genuinely confusing way to spend an afternoon.
+      # Comma-separated if you need to allow a preview domain too.
+      - key: CORS_ORIGINS
+        sync: false
+
+      - key: CLINIC_TIMEZONE
+        value: Europe/Tirane
+      - key: STORAGE_BUCKET
+        value: documents

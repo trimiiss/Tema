@@ -1,0 +1,40 @@
+# The Dockerfile ends in `COPY . .`, so anything not excluded here is baked
+# into the image. Two entries below are not tidiness, they are the point:
+#
+#   .env   holds OPENAI_API_KEY and the Supabase *service-role* key, which
+#          bypasses row-level security entirely. Secrets belong in the host's
+#          environment settings, never in a layer that can be pushed, pulled,
+#          cached or shared.
+#   venv/  is a Windows CPython 3.12 environment. Copying it into a Linux
+#          python:3.11-slim image adds hundreds of megabytes of binaries that
+#          cannot run there, and can shadow the packages pip just installed.
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Local virtualenvs
+venv/
+.venv/
+env/
+
+# Python build artefacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local uploads — documents live in Supabase Storage now, and anything sitting
+# in this folder is leftover test data from before that change.
+uploads/
+
+# Tooling and editor state
+.git/
+.gitignore
+.idea/
+.vscode/
+*.swp
+.DS_Store

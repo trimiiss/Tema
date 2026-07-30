@@ -1,6 +1,10 @@
 services:
   backend:
     build: ./backend
+    # `--reload` lives here rather than in the Dockerfile: it belongs to local
+    # development, where the bind mount below gives it something to watch. The
+    # image itself stays deployable — see the Dockerfile's CMD.
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     ports:
       - "8000:8000"
     env_file: .env
