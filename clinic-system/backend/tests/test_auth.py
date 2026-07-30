@@ -72,7 +72,7 @@ def test_doctor_cannot_create_patient(admin_token):
 def test_receptionist_can_create_patient(receptionist_token):
     created = {
         "id": "p-new", "code": "P099", "first_name": "Test", "last_name": "User",
-        "dob": None, "gender": None, "phone": None, "email": None,
+        "dob": None, "phone": None, "email": None,
         "address": None, "notes": None, "created_at": None,
     }
     with make_client(receptionist_token, "receptionist", {"patients": [created]}) as c:

@@ -38,10 +38,13 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 
 export type Doctor = { id: string; full_name: string; specialty: string | null; bio: string | null };
 export type Reason = { reason: string; label: string; specialty: string };
+export type Service = { id: string; name: string; duration_minutes: number; description: string | null };
+export type Contact = { first_name: string; last_name: string; phone: string; email: string };
 
 export const publicBookingApi = {
   listDoctors: () => request<Doctor[]>("/public/doctors"),
   listReasons: () => request<Reason[]>("/public/reasons"),
+  listServices: () => request<Service[]>("/public/services"),
   slots: (staffId: string, date: string, durationMin = 30) => {
     const qs = new URLSearchParams({ staff_id: staffId, date, duration_min: String(durationMin) });
     return request<{ staff_id: string; date: string; slots: string[] }>(`/public/slots?${qs}`);
@@ -56,10 +59,13 @@ export const publicBookingApi = {
   listRuns: () =>
     request<any[]>(`/public/booking/runs?${new URLSearchParams({ session_id: getSessionId() })}`),
 
-  decide: (gateId: string, decision: "approved" | "rejected") =>
+  // `contact` is whatever the visitor typed into the booking form, sent so the
+  // patient record is written from the form rather than from the model's
+  // re-typing of it. Omitted when they never opened the form.
+  decide: (gateId: string, decision: "approved" | "rejected", contact?: Contact) =>
     request<any>(`/public/booking/confirm/${gateId}`, {
       method: "POST",
-      body: JSON.stringify({ session_id: getSessionId(), decision }),
+      body: JSON.stringify({ session_id: getSessionId(), decision, contact: contact ?? null }),
     }),
 
   // Server-Sent Events over fetch, same frame parser as `lib/api.ts` — no

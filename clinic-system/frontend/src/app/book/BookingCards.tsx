@@ -1,5 +1,6 @@
 "use client";
 import { format } from "date-fns";
+import type { Contact } from "@/lib/publicApi";
 
 // These cards are read straight off the booking agent's own tool results
 // (`agent_steps.output`), never off separately-fetched state — so what a
@@ -20,6 +21,36 @@ export function ReasonPicker({ reasons, onPick }: { reasons: any[]; onPick: (tex
           className="text-left px-3 py-2.5 bg-white border border-gray-200 rounded-xl text-sm text-gray-700 hover:border-primary-400 hover:bg-primary-50 transition"
         >
           {r.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** The clinic's service catalogue — what the booking page opens with.
+ *
+ * Read from `/public/services` rather than from a tool result, because this is
+ * shown before the agent has been asked anything at all. Tapping one sends the
+ * service by name, so the agent's own `list_services` lookup resolves it back
+ * to the same row and can pass its id (and therefore its duration) through to
+ * `propose_booking`. */
+export function ServicePicker({ services, onPick }: { services: any[]; onPick: (text: string) => void }) {
+  if (!services?.length) return null;
+  return (
+    <div className="grid grid-cols-1 gap-2">
+      {services.map(s => (
+        <button
+          key={s.id}
+          onClick={() => onPick(`I'd like to book a ${s.name}.`)}
+          className="group text-left px-4 py-3 bg-white border border-gray-200 rounded-xl hover:border-primary-400 hover:bg-primary-50 transition"
+        >
+          <div className="flex items-center justify-between gap-3">
+            <span className="font-medium text-sm text-gray-800">{s.name}</span>
+            <span className="text-xs text-gray-400 shrink-0">{s.duration_minutes} min</span>
+          </div>
+          {s.description && (
+            <p className="text-xs text-gray-500 mt-0.5">{s.description}</p>
+          )}
         </button>
       ))}
     </div>
@@ -79,15 +110,20 @@ export function SlotPicker({
 }
 
 export function ConfirmationCard({
-  gate, onDecide, deciding,
-}: { gate: any; onDecide: (gateId: string, d: "approved" | "rejected") => void; deciding: boolean }) {
+  gate, contact, onDecide, deciding,
+}: {
+  gate: any;
+  contact?: Contact;
+  onDecide: (gateId: string, d: "approved" | "rejected") => void;
+  deciding: boolean;
+}) {
   if (gate.status !== "pending") {
     return (
       <div className={`rounded-lg px-4 py-3 text-sm font-medium ${
         gate.status === "approved" ? "bg-green-50 text-green-700" : "bg-red-50 text-red-700"
       }`}>
         {gate.status === "approved"
-          ? "Request submitted to the clinic."
+          ? "Appointment confirmed."
           : "No problem — that request was cancelled."}
       </div>
     );
@@ -96,8 +132,23 @@ export function ConfirmationCard({
     <div className="bg-amber-50 border border-amber-300 rounded-xl p-4 space-y-3 mt-2">
       <p className="text-sm font-semibold text-amber-900">Please confirm your request</p>
       <p className="text-sm text-amber-800">{gate.action_description}</p>
+
+      {/* The details exactly as typed into the contact form — these are what
+          get saved, so the visitor confirms the real values rather than the
+          agent's paraphrase of them. */}
+      {contact && (
+        <div className="bg-white/60 border border-amber-200 rounded-lg px-3 py-2 space-y-0.5">
+          <p className="text-xs font-medium text-amber-900">We'll save these details:</p>
+          <p className="text-xs text-amber-800">
+            {[contact.first_name, contact.last_name].filter(Boolean).join(" ")}
+          </p>
+          {contact.phone && <p className="text-xs text-amber-800">{contact.phone}</p>}
+          {contact.email && <p className="text-xs text-amber-800">{contact.email}</p>}
+        </div>
+      )}
+
       <p className="text-xs text-amber-700">
-        This submits a request — the clinic still needs to confirm it before it's a booked appointment.
+        Confirming books this appointment right away — no extra wait on our end.
       </p>
       <div className="flex gap-3">
         <button
@@ -105,7 +156,7 @@ export function ConfirmationCard({
           onClick={() => onDecide(gate.id, "approved")}
           className="px-4 py-2 bg-primary-600 hover:bg-primary-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition"
         >
-          Confirm request
+          Confirm booking
         </button>
         <button
           disabled={deciding}

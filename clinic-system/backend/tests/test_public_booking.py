@@ -1,17 +1,17 @@
 """The public booking chat — the one surface in this app with no auth.
 
 Two properties earn their own tests here, beyond what `test_agent_autonomy.py`
-already checks for every agent (BOOKING_AGENT is parametrized into that
-module's `ALL_AGENTS`, so it already gets the no-write-tools, schema-matches-
-function, and shared-rules coverage for free):
+already checks for every agent (PUBLIC_APPOINTMENT_AGENT is parametrized into
+that module's `ALL_AGENTS`, so it already gets the no-write-tools, schema-
+matches-function, and shared-rules coverage for free):
 
 - `session_id` is the only thing standing in for a JWT on this router, so
   every read or decision on a run/gate must be scoped to it — a mismatch has
   to look exactly like "doesn't exist", or run ids become an enumeration
   oracle over other visitors' bookings.
-- `BOOKING_AGENT` talks to strangers, so "no patient data leaks" has to hold
-  structurally (no lookup tool exists to call) rather than by the model
-  choosing not to answer.
+- `PUBLIC_APPOINTMENT_AGENT` talks to strangers, so "no patient data leaks"
+  has to hold structurally (no lookup tool exists to call) rather than by the
+  model choosing not to answer.
 """
 import pytest
 from unittest.mock import MagicMock, patch
@@ -20,7 +20,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from postgrest.exceptions import APIError
 
-from app.agents.booking_agent import BOOKING_AGENT, propose_booking
+from app.agents.appointment_agent import PUBLIC_APPOINTMENT_AGENT, propose_booking
 from app.agents.runtime import _prior_turns, assert_no_write_tools, run_agent_loop
 from app.services import triage
 from app.services.patient_matching import match_or_create_patient
@@ -52,7 +52,7 @@ def clinic_db():
 # ------------------------------------------------------- the leaf-agent invariant
 
 def test_booking_agent_has_no_write_tools():
-    assert_no_write_tools(BOOKING_AGENT)
+    assert_no_write_tools(PUBLIC_APPOINTMENT_AGENT)
 
 
 def test_booking_agent_has_no_patient_lookup_tool():
@@ -62,7 +62,7 @@ def test_booking_agent_has_no_patient_lookup_tool():
     could possibly answer that — not a tool that refuses, a tool that does not
     exist to be called.
     """
-    names = {t.name.lower() for t in BOOKING_AGENT.tools}
+    names = {t.name.lower() for t in PUBLIC_APPOINTMENT_AGENT.tools}
     for forbidden in ("find_patient", "search_patients", "get_patient", "list_patient_appointments"):
         assert forbidden not in names
     # Nothing here even mentions a patient by name — the only tool that deals
@@ -74,7 +74,7 @@ def test_booking_agent_has_no_patient_lookup_tool():
 def test_booking_agent_has_no_handoff_tool():
     """A leaf agent by construction — cannot reach patient_agent or
     appointment_agent, which do have lookup tools."""
-    assert not any(t.kind == "handoff" for t in BOOKING_AGENT.tools)
+    assert not any(t.kind == "handoff" for t in PUBLIC_APPOINTMENT_AGENT.tools)
 
 
 @pytest.mark.asyncio
@@ -89,7 +89,7 @@ async def test_a_hallucinated_patient_lookup_call_finds_no_such_tool():
         calls(tool_call("c1", "find_patient", query="Krasniqi")),
         says("I can't look up patient records here — a receptionist can help by phone."),
     )
-    outcome = await run_agent_loop(BOOKING_AGENT, task="look up patient Krasniqi", client=client)
+    outcome = await run_agent_loop(PUBLIC_APPOINTMENT_AGENT, task="look up patient Krasniqi", client=client)
 
     assert outcome.kind == "answer"
     assert "No tool named 'find_patient'" in fed_back(client, 2)
@@ -106,7 +106,7 @@ async def test_run_agent_loop_splices_history_between_system_and_task():
     """
     client = scripted(says("ok"))
     await run_agent_loop(
-        BOOKING_AGENT, task="what about tomorrow?",
+        PUBLIC_APPOINTMENT_AGENT, task="what about tomorrow?",
         history=[
             {"role": "user", "content": "I want Dr. Hoxha"},
             {"role": "assistant", "content": "Which day works for you?"},
@@ -202,6 +202,62 @@ def test_propose_booking_proposes_a_workable_slot_without_touching_patients(clin
     # Never touches `patients` — matching/creation happens only after the
     # visitor confirms, in `public_orchestrator.resume_public_booking`.
     assert clinic_db.table("patients").insert.call_count == 0
+
+
+# ---- The chosen service sets the duration ----
+#
+# The booking page opens with the clinic's service catalogue, and those services
+# are not all the same length. Blocking 30 minutes for a 15-minute document
+# check takes a slot off the doctor's day that nobody is using. The duration is
+# read from the service's own row — never from the model, which is only trusted
+# to pass back an id it read out of `list_services`.
+
+SERVICE = {"id": "svc-1", "name": "Document Verification",
+           "duration_minutes": 15, "description": "Administrative document review"}
+
+
+@pytest.fixture
+def clinic_db_with_service(clinic_db):
+    """`clinic_db`, plus a 15-minute service to book against."""
+    tables = {
+        "staff": table_chain([STAFF]),
+        "services": table_chain([SERVICE]),
+        "schedules": make_chain([]),
+        "appointments": make_chain([]),
+        "patients": make_chain([]),
+    }
+    clinic_db.table.side_effect = lambda name: tables.get(name, make_chain([]))
+    return clinic_db
+
+
+def test_propose_booking_takes_its_duration_from_the_service(clinic_db_with_service):
+    result = propose_booking(first_name="Arta", last_name="Berisha", staff_id="s-1",
+                             scheduled_at=MONDAY_10, phone="044111222", service_id="svc-1")
+    assert result["proposed"] is True
+    assert result["action"]["duration_min"] == 15
+    assert result["action"]["service_id"] == "svc-1"
+    # The card names the service, built from the row just read rather than
+    # from anything the model supplied.
+    assert "Document Verification" in result["description"]
+
+
+def test_propose_booking_without_a_service_falls_back_to_the_default(clinic_db):
+    """A visitor who never picked a service still gets booked."""
+    result = propose_booking(first_name="Arta", last_name="Berisha", staff_id="s-1",
+                             scheduled_at=MONDAY_10, phone="044111222")
+    assert result["proposed"] is True
+    assert result["action"]["duration_min"] == 30
+    assert result["action"]["service_id"] is None
+
+
+def test_propose_booking_ignores_a_service_id_that_resolves_to_nothing(clinic_db):
+    """An invented id must not refuse the booking — the visitor picked a real
+    doctor and a real slot, which is enough. It falls back to the default."""
+    result = propose_booking(first_name="Arta", last_name="Berisha", staff_id="s-1",
+                             scheduled_at=MONDAY_10, phone="044111222", service_id="svc-nope")
+    assert result["proposed"] is True
+    assert result["action"]["duration_min"] == 30
+    assert result["action"]["service_id"] is None
 
 
 def test_propose_booking_refuses_an_unknown_doctor(clinic_db):
@@ -350,6 +406,79 @@ async def test_approved_booking_matches_the_patient_and_lands_confirmed():
     assert inserted["patient_id"] == "p-new"
     audit.assert_called_once()
     assert update.call_args.kwargs["status"] == "completed"
+
+
+# ---- The patient record is written from the form, not the model's re-typing ----
+#
+# The contact form composes prose ("My phone number is …") into the chat, and the
+# model re-types it into `propose_booking`'s arguments. That transcription is
+# where a digit goes missing, and a receptionist is then left with a number they
+# cannot call back. The browser sends the form's own values with the
+# confirmation, and those win.
+
+def test_typed_contact_overrides_what_the_model_transcribed():
+    from app.agents.public_orchestrator import _contact_for_record
+
+    payload = {"first_name": "Arta", "last_name": "Berisha",
+               "phone": "044111223", "email": "arta@test.com"}   # model dropped a digit
+    contact = {"first_name": "Arta", "last_name": "Berisha",
+               "phone": "044111222", "email": "arta@test.com"}   # what she actually typed
+
+    assert _contact_for_record(payload, contact)["phone"] == "044111222"
+
+
+def test_a_field_left_blank_in_the_form_falls_back_to_the_payload():
+    """Blanking a value the model did get right would be a regression, not a fix."""
+    from app.agents.public_orchestrator import _contact_for_record
+
+    payload = {"first_name": "Arta", "last_name": "Berisha", "phone": "044111222", "email": ""}
+    contact = {"first_name": "", "last_name": "Berisha", "phone": "", "email": ""}
+
+    details = _contact_for_record(payload, contact)
+    assert details["first_name"] == "Arta"
+    assert details["phone"] == "044111222"
+
+
+def test_no_contact_at_all_leaves_the_payload_untouched():
+    """A visitor who typed their details as free text never opens the form."""
+    from app.agents.public_orchestrator import _contact_for_record
+
+    payload = {"first_name": "Arta", "last_name": "Berisha", "phone": "044111222", "email": ""}
+    assert _contact_for_record(payload, None) == payload
+
+
+@pytest.mark.asyncio
+async def test_the_confirmed_booking_records_the_typed_contact():
+    """End to end: what reaches `match_or_create_patient` is the form's values."""
+    from app.agents import public_orchestrator as po
+
+    gate = {
+        "id": "gate-2", "run_id": "run-5", "action_description": "Book Arta Berisha",
+        "payload": {
+            "action": "create_booking", "first_name": "Arta", "last_name": "Berisha",
+            "phone": "044999999", "email": "", "staff_id": "s-1", "staff_name": "Dr. Arben Hoxha",
+            "scheduled_at": MONDAY_10, "duration_min": 30, "reason": "", "notes": "",
+        },
+    }
+    db = MagicMock()
+    db.table.side_effect = lambda name: make_chain([{"id": "appt-new"}])
+
+    with patch.object(po, "_get_gate", return_value=gate), \
+         patch.object(po, "_log_step", return_value="step-1"), \
+         patch.object(po, "_update_run"), \
+         patch.object(po, "log_action"), \
+         patch.object(po, "match_or_create_patient",
+                      return_value={"patient": {"id": "p-new"}, "created": True}) as matcher, \
+         patch_db(db):
+        await po.resume_public_booking(
+            "run-5", "gate-2", "approved",
+            contact={"first_name": "Arta", "last_name": "Berisha",
+                     "phone": "044111222", "email": "arta@test.com"},
+        )
+
+    matcher.assert_called_once_with(
+        first_name="Arta", last_name="Berisha", phone="044111222", email="arta@test.com",
+    )
 
 
 @pytest.mark.asyncio

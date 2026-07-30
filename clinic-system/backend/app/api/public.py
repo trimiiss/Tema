@@ -30,7 +30,7 @@ from app.core.ratelimit import enforce_rate_limit
 from app.core.tasks import spawn
 from app.models.schemas import (
     AgentRunOut, PublicChatRequest, PublicConfirmRequest,
-    PublicDoctorOut, PublicReasonOut, PublicSlotsOut,
+    PublicDoctorOut, PublicReasonOut, PublicServiceOut, PublicSlotsOut,
 )
 from app.services import triage
 from app.services.schedule_service import get_available_slots, parse_when
@@ -60,6 +60,20 @@ def list_doctors():
 @router.get("/reasons", response_model=list[PublicReasonOut])
 def list_reasons():
     return triage.list_reasons()
+
+
+@router.get("/services", response_model=list[PublicServiceOut])
+def list_services():
+    """The clinic's service catalogue — what the booking page opens with.
+
+    Read from `services` rather than from `triage.list_reasons`, so the menu a
+    visitor is shown is the clinic's real, staff-maintained list of appointment
+    types (and their durations) rather than a routing table that happens to
+    read like one.
+    """
+    return execute_with_retry(
+        get_db().table("services").select("id,name,duration_minutes,description").order("name")
+    ).data
 
 
 @router.get("/slots", response_model=PublicSlotsOut)
@@ -208,7 +222,8 @@ def confirm_booking(gate_id: str, body: PublicConfirmRequest):
     publish(gate.data["run_id"], {"type": "gate", "gate": {**gate.data, "status": body.decision}})
 
     from app.agents.public_orchestrator import resume_public_booking
-    spawn(resume_public_booking(gate.data["run_id"], gate_id, body.decision),
+    spawn(resume_public_booking(gate.data["run_id"], gate_id, body.decision,
+                                contact=body.contact.model_dump() if body.contact else None),
           name=f"booking-confirm:{gate_id}")
 
     return {"gate_id": gate_id, "decision": body.decision}

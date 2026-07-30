@@ -25,7 +25,6 @@ export default function PatientModal({
     first_name: patient?.first_name ?? "",
     last_name: patient?.last_name ?? "",
     dob: patient?.dob ?? "",
-    gender: patient?.gender ?? "",
     phone: patient?.phone ?? "",
     email: patient?.email ?? "",
     address: patient?.address ?? "",
@@ -43,12 +42,11 @@ export default function PatientModal({
     }
     setSaving(true);
     try {
-      // Empty strings would fail the date/enum column types — send nulls.
+      // Empty strings would fail the date column type — send nulls.
       const body: Record<string, any> = {
         first_name: form.first_name.trim(),
         last_name: form.last_name.trim(),
         dob: form.dob || null,
-        gender: form.gender || null,
         phone: form.phone.trim() || null,
         email: form.email.trim() || null,
         address: form.address.trim() || null,
@@ -96,7 +94,7 @@ export default function PatientModal({
             </div>
           </div>
 
-          <div className="grid grid-cols-3 gap-4">
+          <div className="grid grid-cols-2 gap-4">
             <div>
               <label className={label}>ID {isEdit && <span className="text-gray-400">(fixed)</span>}</label>
               <input className={field + (isEdit ? " bg-gray-50 text-gray-400" : "")}
@@ -107,15 +105,6 @@ export default function PatientModal({
               <label className={label}>Date of birth</label>
               <input type="date" className={field} value={form.dob}
                 onChange={e => set("dob", e.target.value)} />
-            </div>
-            <div>
-              <label className={label}>Gender</label>
-              <select className={field} value={form.gender} onChange={e => set("gender", e.target.value)}>
-                <option value="">—</option>
-                <option value="M">M</option>
-                <option value="F">F</option>
-                <option value="Other">Other</option>
-              </select>
             </div>
           </div>
 

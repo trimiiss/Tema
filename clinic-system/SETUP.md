@@ -42,8 +42,37 @@ cd backend
 pip install -r requirements.txt
 pytest tests/ -v
 ```
-Expected: 191 tests passing. No `.env` or live Supabase connection is needed —
+Expected: 273 tests passing. No `.env` or live Supabase connection is needed —
 the suite is fully mocked.
+
+## 4b. Measure accuracy (evaluation figures)
+
+The test suite proves the system *behaves* correctly; it never calls a model.
+To get the accuracy numbers the evaluation chapter needs, run the harness —
+this makes real GPT-4o calls, so it needs `OPENAI_API_KEY` and costs money:
+
+```bash
+cd backend
+python scripts/evaluate.py --all --json results/eval.json
+python scripts/evaluate.py --routing --repeat 3     # report a spread, not one lucky run
+```
+
+It reports three figures against fixed inputs with known-correct answers:
+
+| Measure | What it scores | Ground truth |
+|---|---|---|
+| Routing accuracy | Does the supervisor pick the right agent? | `tests/scenarios.json` |
+| Field extraction | Does the document agent read the right values off a PDF? | `tests/gold_documents.json` |
+| Summary groundedness | Is every claim in a summary supported by its source? | Judged claim-by-claim against the document text |
+
+Routing calls `orchestrator.decide_route` — the same function the running app
+routes with — so the figure describes production behaviour rather than a
+reimplementation that can drift. The extraction pass also re-checks that the
+injection specimen's embedded commands never surface as extracted fields.
+
+The specimen PDFs come from `python scripts/make_sample_documents.py`; the gold
+values are taken from that same script, so they are what is literally printed
+on the page.
 
 ## 5. Demo Workflows
 

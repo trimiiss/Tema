@@ -1,20 +1,14 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import toast from "react-hot-toast";
-import { publicBookingApi } from "@/lib/publicApi";
-import { ReasonPicker, DoctorPicker, SlotPicker, ConfirmationCard } from "./BookingCards";
+import { publicBookingApi, type Contact } from "@/lib/publicApi";
+import { ReasonPicker, ServicePicker, DoctorPicker, SlotPicker, ConfirmationCard } from "./BookingCards";
 import ContactForm from "./ContactForm";
 
 // `run` is set only on messages rebuilt from history — see agent-chat's
 // `messagesFromRuns` for the original version of this pattern; this is the
 // same idea, minus the "restored from a staff account" framing.
 type Message = { role: "user" | "agent"; text: string; runId?: string; run?: any };
-
-const EXAMPLES = [
-  "I'd like to book a general check-up",
-  "My child needs to see a doctor",
-  "What's the soonest appointment you have?",
-];
 
 const isFinished = (status?: string) => status === "completed" || status === "failed";
 
@@ -53,10 +47,11 @@ function pickerSteps(steps: any[] = []) {
 }
 
 function BookingRunDetail({
-  runId, initialRun, doctorNames, onDoctorsSeen, onSend,
+  runId, initialRun, doctorNames, contact, onDoctorsSeen, onSend,
 }: {
   runId: string; initialRun?: any;
   doctorNames: Record<string, string>;
+  contact?: Contact;
   onDoctorsSeen: (names: Record<string, string>) => void;
   onSend: (text: string) => void;
 }) {
@@ -104,7 +99,10 @@ function BookingRunDetail({
   async function decide(gateId: string, decision: "approved" | "rejected") {
     setDeciding(true);
     try {
-      await publicBookingApi.decide(gateId, decision);
+      // The form's own values travel with the confirmation, so the patient
+      // record is written from what the visitor typed rather than from the
+      // model's re-typing of it.
+      await publicBookingApi.decide(gateId, decision, contact);
     } catch (e: any) {
       toast.error(e.message);
     } finally {
@@ -135,7 +133,7 @@ function BookingRunDetail({
         <SlotPicker slots={[earliest.slot]} doctorName={earliest.staff_name} onPick={onSend} />
       )}
 
-      {pending && <ConfirmationCard gate={pending} onDecide={decide} deciding={deciding} />}
+      {pending && <ConfirmationCard gate={pending} contact={contact} onDecide={decide} deciding={deciding} />}
       {decided.map((g: any) => <ConfirmationCard key={g.id} gate={g} onDecide={decide} deciding={false} />)}
     </div>
   );
@@ -147,6 +145,10 @@ export default function BookingChat() {
   const [sending, setSending] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [doctorNames, setDoctorNames] = useState<Record<string, string>>({});
+  const [services, setServices] = useState<any[]>([]);
+  // What the visitor typed into the contact form, kept verbatim so it can be
+  // sent with the confirmation instead of the model's version of it.
+  const [contact, setContact] = useState<Contact | undefined>();
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
@@ -157,6 +159,18 @@ export default function BookingChat() {
       .then(runs => { if (!cancelled) setMessages(prev => (prev.length ? prev : messagesFromRuns(runs))); })
       .catch(() => { /* a fresh conversation is a fine fallback */ })
       .finally(() => { if (!cancelled) setLoadingHistory(false); });
+    return () => { cancelled = true; };
+  }, []);
+
+  // The opening menu is the clinic's own service catalogue, so a visitor picks
+  // something the clinic actually offers instead of guessing what to type. The
+  // agent's mid-conversation pickers (reasons, doctors, slots) still come from
+  // its own tool results — see `pickerSteps`.
+  useEffect(() => {
+    let cancelled = false;
+    publicBookingApi.listServices()
+      .then(rows => { if (!cancelled) setServices(rows); })
+      .catch(() => { /* the free-text box below still works */ });
     return () => { cancelled = true; };
   }, []);
 
@@ -188,18 +202,16 @@ export default function BookingChat() {
           <p className="text-sm text-gray-400">Loading…</p>
         )}
         {!loadingHistory && messages.length === 0 && (
-          <div className="space-y-4">
-            <p className="text-gray-500 text-sm">
-              Hi! I can help you book an appointment. What brings you in?
-            </p>
-            <div className="grid grid-cols-1 gap-2">
-              {EXAMPLES.map(ex => (
-                <button key={ex} onClick={() => send(ex)}
-                  className="text-left px-4 py-3 bg-white border border-gray-200 rounded-xl text-sm text-gray-700 hover:border-primary-400 hover:bg-primary-50 transition">
-                  {ex}
-                </button>
-              ))}
+          <div className="space-y-3">
+            <div>
+              <p className="text-gray-700 text-sm font-medium">
+                Hi! What would you like to book?
+              </p>
+              <p className="text-gray-400 text-xs mt-0.5">
+                Pick a service to get started — or just type below.
+              </p>
             </div>
+            <ServicePicker services={services} onPick={send} />
           </div>
         )}
         {messages.map((m, i) => (
@@ -213,6 +225,7 @@ export default function BookingChat() {
                   ? <BookingRunDetail
                       runId={m.runId} initialRun={m.run}
                       doctorNames={doctorNames}
+                      contact={contact}
                       onDoctorsSeen={mergeDoctorNames}
                       onSend={send}
                     />
@@ -225,7 +238,7 @@ export default function BookingChat() {
       </div>
 
       <div className="border-t border-gray-200 pt-3 space-y-2">
-        <ContactForm onSend={send} disabled={sending} />
+        <ContactForm onSend={send} onContact={setContact} disabled={sending} />
         <div className="flex gap-3">
           <input
             value={input}

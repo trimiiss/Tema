@@ -2,10 +2,11 @@
 
 `orchestrator.py` runs a cyclic LangGraph because a staff request can traverse
 several agents (register a patient, then book them). The public booking chat
-never needs that: `booking_agent.BOOKING_AGENT` has no handoff tool and nothing
-to hand off to, so a graph here would add machinery without adding capability
-— and every extra node is an extra thing to prove safe for an endpoint that
-takes anonymous input. A plain async function is the whole orchestrator.
+never needs that: `appointment_agent.PUBLIC_APPOINTMENT_AGENT` has no handoff
+tool and nothing to hand off to, so a graph here would add machinery without
+adding capability — and every extra node is an extra thing to prove safe for
+an endpoint that takes anonymous input. A plain async function is the whole
+orchestrator.
 
 The two entry points mirror `run_orchestrator` / `resume_orchestrator`
 deliberately, so the SSE event vocabulary (`snapshot`/`step`/`gate`/`status`/
@@ -27,7 +28,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from app.agents.booking_agent import BOOKING_AGENT
+from app.agents.appointment_agent import PUBLIC_APPOINTMENT_AGENT
 from app.agents.runtime import run_agent_loop
 from app.core.audit import log_action
 from app.core.database import get_db, execute_with_retry
@@ -197,7 +198,7 @@ async def run_booking_agent(run_id: str, session_id: str, input_text: str) -> No
             _log_step(run_id, action, inp, out)
 
         outcome = await run_agent_loop(
-            BOOKING_AGENT, task=input_text, context=context, history=history, on_step=on_step,
+            PUBLIC_APPOINTMENT_AGENT, task=input_text, context=context, history=history, on_step=on_step,
         )
 
         if outcome.kind == "proposal":
@@ -219,12 +220,38 @@ async def run_booking_agent(run_id: str, session_id: str, input_text: str) -> No
         _update_run(run_id, status="failed", result={"error": str(e)})
 
 
-async def resume_public_booking(run_id: str, gate_id: str, decision: str) -> None:
+def _contact_for_record(payload: dict, contact: Optional[Dict[str, str]]) -> Dict[str, str]:
+    """The visitor's details as they typed them, falling back to the payload.
+
+    `payload` carries what the *model* passed to `propose_booking`, which is its
+    transcription of prose the contact form composed ("My phone number is …").
+    A model re-typing a phone number or an email is exactly where a digit goes
+    missing, and the receptionist then has a record they cannot call back.
+
+    When the browser sends the form's own values with the confirmation, those
+    win field by field: they are what the visitor actually typed and what the
+    confirmation card showed them. A field left blank in the form falls back to
+    the payload rather than blanking a value the model did get right, and a
+    visitor who typed their details as free text instead of using the form sends
+    no contact at all and is unaffected.
+    """
+    contact = contact or {}
+    return {
+        field: (contact.get(field) or "").strip() or payload.get(field, "")
+        for field in ("first_name", "last_name", "phone", "email")
+    }
+
+
+async def resume_public_booking(run_id: str, gate_id: str, decision: str,
+                                contact: Optional[Dict[str, str]] = None) -> None:
     """Execute a visitor-confirmed booking request. The only writer in this module.
 
     Reached only after `POST /public/booking/confirm/{gate_id}` has already
     verified the gate belongs to the caller's session — this function trusts
     that check happened and does not repeat it.
+
+    `contact` is the booking form's own values, passed straight through from the
+    confirmation request — see `_contact_for_record`.
     """
     if decision != "approved":
         _update_run(
@@ -242,16 +269,17 @@ async def resume_public_booking(run_id: str, gate_id: str, decision: str) -> Non
     _log_step(run_id, "execute_confirmed_booking", payload, {"decision": decision})
 
     try:
+        details = _contact_for_record(payload, contact)
         match = match_or_create_patient(
-            first_name=payload.get("first_name", ""),
-            last_name=payload.get("last_name", ""),
-            phone=payload.get("phone", ""),
-            email=payload.get("email", ""),
+            first_name=details["first_name"],
+            last_name=details["last_name"],
+            phone=details["phone"],
+            email=details["email"],
         )
         patient = match["patient"]
 
         db = get_db()
-        appointment = db.table("appointments").insert({
+        booking = {
             "patient_id": patient["id"],
             "staff_id": payload["staff_id"],
             "scheduled_at": to_clinic(datetime.fromisoformat(payload["scheduled_at"])).isoformat(),
@@ -264,7 +292,13 @@ async def resume_public_booking(run_id: str, gate_id: str, decision: str) -> Non
             ).strip(),
             "created_by": None,
             "updated_by": None,
-        }).execute().data[0]
+        }
+        # Only when the visitor actually chose one — `service_id` is a FK, so a
+        # null would be fine but an empty string is not a UUID and would be
+        # rejected by Postgres at insert time.
+        if payload.get("service_id"):
+            booking["service_id"] = payload["service_id"]
+        appointment = db.table("appointments").insert(booking).execute().data[0]
 
         log_action(None, "create", "appointment", appointment["id"], {
             "source": "patient_portal", "patient_created": match["created"],

@@ -1,13 +1,25 @@
 "use client";
 import { useState } from "react";
+import type { Contact } from "@/lib/publicApi";
 
 // A real form for contact details rather than free text, because a phone
 // number or email is exactly the kind of thing a model re-typing what it
 // heard is most likely to get wrong. Filling this in and sending it composes
 // one plain sentence into the chat — the conversation stays the single
-// channel `booking_agent.propose_booking` reads from, this just guarantees
-// what lands in it is typed correctly.
-export default function ContactForm({ onSend, disabled }: { onSend: (text: string) => void; disabled: boolean }) {
+// channel `propose_booking` reads from, so the agent can still reason about
+// what it was told.
+//
+// The typed values are also handed straight up via `onContact`, and the chat
+// sends them with the confirmation so the *patient record* is written from
+// this form rather than from the model's transcription of the sentence. What
+// the visitor typed here is what a receptionist ends up reading.
+export default function ContactForm({
+  onSend, onContact, disabled,
+}: {
+  onSend: (text: string) => void;
+  onContact: (contact: Contact) => void;
+  disabled: boolean;
+}) {
   const [open, setOpen] = useState(false);
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
@@ -20,6 +32,12 @@ export default function ContactForm({ onSend, disabled }: { onSend: (text: strin
   const canSend = lastName.trim() && (phone.trim() || email.trim());
 
   function send() {
+    onContact({
+      first_name: firstName.trim(),
+      last_name: lastName.trim(),
+      phone: phone.trim(),
+      email: email.trim(),
+    });
     const parts = [`My name is ${firstName.trim()} ${lastName.trim()}`.trim() + "."];
     if (phone.trim()) parts.push(`My phone number is ${phone.trim()}.`);
     if (email.trim()) parts.push(`My email is ${email.trim()}.`);

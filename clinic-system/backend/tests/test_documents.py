@@ -211,3 +211,32 @@ def test_dedupe_fields_keeps_order_and_drops_nameless_entries():
     ])
     assert [f["name"] for f in out] == ["insurer_name", "validity_date"]
     assert out[0]["value"] == "Sigal"   # lower-confidence repeat does not win
+
+
+# ---- The summary is stored, not just generated ----
+#
+# `run_document_agent` always produced one — a model call per upload — but the
+# write-back saved only `status` and `doc_type`, so every summary was discarded
+# the moment it was made. Staff had nothing to verify and groundedness could not
+# be measured against anything. These pin it to the row.
+
+@pytest.mark.asyncio
+async def test_the_generated_summary_is_written_to_the_document():
+    table, _ = await _run_processing({
+        "doc_type": "referral",
+        "fields": [],
+        "summary": "A referral for Fjolla Berisha from Dr. Arben Hoxha.",
+    })
+
+    saved = [c.args[0] for c in table.update.call_args_list if "summary" in c.args[0]]
+    assert saved, "the document update never carried a summary"
+    assert saved[0]["summary"] == "A referral for Fjolla Berisha from Dr. Arben Hoxha."
+
+
+@pytest.mark.asyncio
+async def test_a_document_with_no_summary_still_processes():
+    """An empty summary must not block the status/doc_type write."""
+    table, _ = await _run_processing({"doc_type": "other", "fields": [], "summary": ""})
+
+    saved = [c.args[0] for c in table.update.call_args_list if "doc_type" in c.args[0]]
+    assert saved and saved[0]["doc_type"] == "other"

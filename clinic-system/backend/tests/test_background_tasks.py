@@ -80,26 +80,3 @@ async def test_drain_cancels_work_that_overruns_the_timeout():
 async def test_drain_with_nothing_pending_is_a_no_op():
     await tasks.drain(timeout=0.01)
     assert tasks.pending() == 0
-
-
-def test_uploads_resolve_inside_the_backend_root_not_the_filesystem_root():
-    """`/app/uploads` is a container path; on Windows it became `C:\\app\\uploads`.
-
-    Compose mounts `./backend` at `/app`, so a path relative to the backend root
-    is the same directory in both the container and a local uvicorn run.
-    """
-    from app.core.config import BACKEND_ROOT, upload_path
-
-    resolved = upload_path()
-    assert resolved.is_absolute()
-    assert resolved == BACKEND_ROOT / "uploads"
-    assert BACKEND_ROOT in resolved.parents
-
-
-def test_an_absolute_upload_dir_is_still_honoured():
-    """Deployments that mount storage elsewhere can set it explicitly."""
-    from unittest.mock import patch
-    from app.core.config import settings, upload_path
-
-    with patch.object(settings, "upload_dir", "/mnt/clinic-storage"):
-        assert str(upload_path()).replace("\\", "/").endswith("/mnt/clinic-storage")

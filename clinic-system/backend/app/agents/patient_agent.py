@@ -16,12 +16,14 @@ from app.agents.runtime import (
     AgentSpec, ToolSpec, handoff_tool, mutating, obj, string,
 )
 
-REQUIRED_FIELDS = ["first_name", "last_name", "dob", "gender", "phone", "email", "address"]
+REQUIRED_FIELDS = ["first_name", "last_name", "dob", "phone", "email", "address"]
 
 # Fields a proposal is allowed to set. Anything else the model invents — an id,
 # a created_by, a column that does not exist — is dropped before it reaches the
-# gate, so an approved gate can never write outside this set.
-WRITABLE_FIELDS = {"first_name", "last_name", "dob", "gender", "phone", "email", "address", "notes"}
+# gate, so an approved gate can never write outside this set. `gender` is
+# deliberately absent: the clinic does not record it, and leaving it out here
+# means a model cannot write it even though the column still exists.
+WRITABLE_FIELDS = {"first_name", "last_name", "dob", "phone", "email", "address", "notes"}
 
 
 def tool_get_patient(patient_code: str) -> Dict[str, Any]:
@@ -96,26 +98,6 @@ def _valid_dob(value: str) -> bool:
     return date(1900, 1, 1) <= parsed <= date.today()
 
 
-VALID_GENDERS = {"M", "F", "Other"}
-
-
-def _normalize_gender(value: str) -> str | None:
-    """Map what a person would say onto the column's CHECK constraint.
-
-    `patients.gender` only accepts M/F/Other; "male" would be rejected by
-    Postgres at insert time — long after the human approved the gate — so it is
-    normalized here or refused before the gate is ever opened.
-    """
-    v = (value or "").strip().lower()
-    if v in ("m", "male"):
-        return "M"
-    if v in ("f", "female"):
-        return "F"
-    if v in ("other", "o", "non-binary", "nonbinary"):
-        return "Other"
-    return None
-
-
 def _next_patient_code() -> str:
     """The next free Pnnn code.
 
@@ -134,22 +116,16 @@ def _next_patient_code() -> str:
     return f"P{highest + 1:03d}"
 
 
-def propose_create_patient(first_name: str, last_name: str, dob: str = "", gender: str = "",
+def propose_create_patient(first_name: str, last_name: str, dob: str = "",
                            phone: str = "", email: str = "", address: str = "") -> Dict[str, Any]:
     fields = _clean({
         "first_name": first_name, "last_name": last_name, "dob": dob,
-        "gender": gender, "phone": phone, "email": email, "address": address,
+        "phone": phone, "email": email, "address": address,
     })
     if not fields.get("first_name") or not fields.get("last_name"):
         return {"proposed": False, "error": "A first and last name are required to register a patient."}
     if "dob" in fields and not _valid_dob(fields["dob"]):
         return {"proposed": False, "error": f"'{fields['dob']}' is not a valid date of birth (use YYYY-MM-DD)."}
-    if "gender" in fields:
-        normalized = _normalize_gender(fields["gender"])
-        if normalized is None:
-            return {"proposed": False,
-                    "error": f"'{fields['gender']}' is not a recordable gender. Use M, F or Other."}
-        fields["gender"] = normalized
 
     # A duplicate record is worse than an extra question — surface the match and
     # let the human decide rather than silently creating a second file.
@@ -197,12 +173,6 @@ def propose_update_patient(patient_id: str, fields: Dict[str, Any]) -> Dict[str,
         }
     if "dob" in clean and not _valid_dob(clean["dob"]):
         return {"proposed": False, "error": f"'{clean['dob']}' is not a valid date of birth (use YYYY-MM-DD)."}
-    if "gender" in clean:
-        normalized = _normalize_gender(clean["gender"])
-        if normalized is None:
-            return {"proposed": False,
-                    "error": f"'{clean['gender']}' is not a recordable gender. Use M, F or Other."}
-        clean["gender"] = normalized
 
     name = f"{patient['first_name']} {patient['last_name']}"
     changes = ", ".join(f"{k} → {v}" for k, v in clean.items())
@@ -288,7 +258,6 @@ PATIENT_AGENT = AgentSpec(
                     "first_name": string("Given name."),
                     "last_name": string("Family name."),
                     "dob": string("Date of birth as YYYY-MM-DD, if the user gave one."),
-                    "gender": string("If the user gave one."),
                     "phone": string("If the user gave one."),
                     "email": string("If the user gave one."),
                     "address": string("If the user gave one."),
@@ -307,7 +276,7 @@ PATIENT_AGENT = AgentSpec(
                     "fields": {
                         "type": "object",
                         "description": "Only the fields to change. Allowed: "
-                                       "first_name, last_name, dob, gender, phone, email, address, notes.",
+                                       "first_name, last_name, dob, phone, email, address, notes.",
                     },
                 },
                 ["patient_id", "fields"],

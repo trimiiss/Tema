@@ -95,7 +95,7 @@ export default function PatientsPage() {
               <table className="w-full text-sm">
                 <thead className="bg-gray-50 border-b border-gray-200">
                   <tr>
-                    {["ID","Name","Gender","Phone","Email"].map(h =>
+                    {["ID","Name","Phone","Email"].map(h =>
                       <th key={h} className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wide">{h}</th>
                     )}
                   </tr>
@@ -106,7 +106,6 @@ export default function PatientsPage() {
                       className={`cursor-pointer hover:bg-gray-50 ${selected?.id === p.id ? "bg-primary-50" : ""}`}>
                       <td className="px-4 py-3 font-mono text-primary-600">{p.code}</td>
                       <td className="px-4 py-3 font-medium">{p.first_name} {p.last_name}</td>
-                      <td className="px-4 py-3 text-gray-500">{p.gender ?? "—"}</td>
                       <td className="px-4 py-3 text-gray-500">{p.phone ?? "—"}</td>
                       <td className="px-4 py-3 text-gray-500">{p.email ?? "—"}</td>
                     </tr>
@@ -132,7 +131,7 @@ export default function PatientsPage() {
                 )}
               </div>
               <div className="space-y-2 text-sm">
-                {[["DOB", selected.dob], ["Gender", selected.gender], ["Phone", selected.phone],
+                {[["DOB", selected.dob], ["Phone", selected.phone],
                   ["Email", selected.email], ["Address", selected.address]].map(([label, val]) => (
                   <div key={label} className="flex gap-2">
                     <span className="text-gray-400 w-16 flex-shrink-0">{label}</span>

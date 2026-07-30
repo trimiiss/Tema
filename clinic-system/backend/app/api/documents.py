@@ -3,7 +3,7 @@ import uuid
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 from app.core.auth import require_roles
-from app.core.config import upload_path
+from app.core.config import settings
 from app.core.database import get_db, execute_with_retry
 from app.core.audit import log_action
 from app.core.tasks import spawn
@@ -36,17 +36,16 @@ async def upload_document(
     if file.content_type not in allowed_types:
         raise HTTPException(status_code=415, detail="Unsupported file type")
 
-    upload_dir = upload_path()
-    upload_dir.mkdir(parents=True, exist_ok=True)
     file_id = str(uuid.uuid4())
     ext = os.path.splitext(file.filename or "file")[1] or ".bin"
-    storage_path = str(upload_dir / f"{file_id}{ext}")
+    storage_path = f"{file_id}{ext}"
 
     contents = await file.read()
-    with open(storage_path, "wb") as f:
-        f.write(contents)
-
     db = get_db()
+    db.storage.from_(settings.storage_bucket).upload(
+        storage_path, contents, file_options={"content-type": file.content_type},
+    )
+
     doc_data = {
         "filename": file.filename,
         "storage_path": storage_path,

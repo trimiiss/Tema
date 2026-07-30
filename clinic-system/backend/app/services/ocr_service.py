@@ -1,19 +1,21 @@
+import io
 import os
 from typing import Any, Dict, List, Optional
+from app.core.config import settings
 from app.core.database import get_db, execute_with_retry
 
 
-def extract_text_from_file(file_path: str) -> str:
-    ext = os.path.splitext(file_path)[1].lower()
+def extract_text_from_file(file_bytes: bytes, ext: str) -> str:
+    ext = ext.lower()
     try:
         if ext == ".pdf":
             import pdfplumber
-            with pdfplumber.open(file_path) as pdf:
+            with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
                 return "\n".join(page.extract_text() or "" for page in pdf.pages)
         else:
             import pytesseract
             from PIL import Image
-            img = Image.open(file_path)
+            img = Image.open(io.BytesIO(file_bytes))
             return pytesseract.image_to_string(img)
     except Exception as e:
         return f"[OCR error: {e}]"
@@ -44,7 +46,7 @@ def dedupe_fields(fields: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return list(best.values())
 
 
-async def process_document_async(doc_id: str, file_path: str, user_id: str) -> None:
+async def process_document_async(doc_id: str, storage_path: str, user_id: str) -> None:
     """Classify an uploaded document and store the fields read off it.
 
     Every query goes through `execute_with_retry`. This runs as a background
@@ -56,15 +58,21 @@ async def process_document_async(doc_id: str, file_path: str, user_id: str) -> N
     db = get_db()
     execute_with_retry(db.table("documents").update({"status": "processing"}).eq("id", doc_id))
 
-    raw_text = extract_text_from_file(file_path)
+    file_bytes = db.storage.from_(settings.storage_bucket).download(storage_path)
+    raw_text = extract_text_from_file(file_bytes, os.path.splitext(storage_path)[1])
 
     # Use Document Agent for classification + extraction
     from app.agents.document_agent import run_document_agent
     result = await run_document_agent(doc_id, raw_text, user_id)
 
+    # The summary is stored, not just generated. `run_document_agent` has always
+    # returned one — a model call per upload, prompted to stay strictly on the
+    # source text — but it used to be dropped here, so staff had nothing to
+    # verify it against and its groundedness could not be measured at all.
     execute_with_retry(db.table("documents").update({
         "status": "pending",  # stays pending until staff verifies
         "doc_type": result.get("doc_type", "other"),
+        "summary": result.get("summary", ""),
     }).eq("id", doc_id))
 
     # Save extracted fields. Three insurance uploads each stored all four of

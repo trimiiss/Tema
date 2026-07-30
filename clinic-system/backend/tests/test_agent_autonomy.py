@@ -13,22 +13,22 @@ import json
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from app.agents.appointment_agent import APPOINTMENT_AGENT
-from app.agents.booking_agent import BOOKING_AGENT
+from app.agents.appointment_agent import APPOINTMENT_AGENT, PUBLIC_APPOINTMENT_AGENT
 from app.agents.document_agent import DOCUMENT_AGENT
 from app.agents.patient_agent import PATIENT_AGENT
 from app.agents.reporting_agent import REPORTING_AGENT
 from app.agents.runtime import WriteToolExposed, assert_no_write_tools, run_agent_loop
 from tests.conftest import make_chain, patch_db, table_chain
 
-# BOOKING_AGENT is the one agent an unauthenticated caller ever reaches (see
-# `app/agents/booking_agent.py` and `tests/test_public_booking.py`), so it
-# gets the same structural guarantees as the four staff agents: no write
-# tools, schemas that match their functions, proposals named `propose_*`, and
-# the shared rules. What it must NOT have — a patient-lookup tool, a handoff
-# tool — is asserted separately in `test_public_booking.py`, since those are
-# properties specific to a public-facing agent rather than shared ones.
-ALL_AGENTS = [APPOINTMENT_AGENT, PATIENT_AGENT, DOCUMENT_AGENT, REPORTING_AGENT, BOOKING_AGENT]
+# PUBLIC_APPOINTMENT_AGENT is the one agent an unauthenticated caller ever
+# reaches (see `app/agents/appointment_agent.py` and
+# `tests/test_public_booking.py`), so it gets the same structural guarantees
+# as the four staff agents: no write tools, schemas that match their
+# functions, proposals named `propose_*`, and the shared rules. What it must
+# NOT have — a patient-lookup tool, a handoff tool — is asserted separately in
+# `test_public_booking.py`, since those are properties specific to a
+# public-facing agent rather than shared ones.
+ALL_AGENTS = [APPOINTMENT_AGENT, PATIENT_AGENT, DOCUMENT_AGENT, REPORTING_AGENT, PUBLIC_APPOINTMENT_AGENT]
 
 PATIENT = {"id": "p-1", "code": "P001", "first_name": "Arta", "last_name": "Berisha"}
 STAFF = {"id": "s-1", "full_name": "Dr. Arben Hoxha", "specialty": "General"}

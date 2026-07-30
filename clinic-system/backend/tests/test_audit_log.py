@@ -65,7 +65,7 @@ def test_patient_create_audit_logged():
     # A real row always carries every column, so the fixture must too.
     patient_data = {
         "id": "p-new", "code": "P099", "first_name": "Test", "last_name": "User",
-        "dob": None, "gender": None, "phone": None, "email": None,
+        "dob": None, "phone": None, "email": None,
         "address": None, "notes": None, "created_at": None,
     }
     rows = {

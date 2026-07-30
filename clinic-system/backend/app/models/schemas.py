@@ -10,7 +10,6 @@ class PatientCreate(BaseModel):
     first_name: str
     last_name: str
     dob: Optional[date] = None
-    gender: Optional[str] = None
     phone: Optional[str] = None
     email: Optional[str] = None
     address: Optional[str] = None
@@ -21,7 +20,6 @@ class PatientUpdate(BaseModel):
     first_name: Optional[str] = None
     last_name: Optional[str] = None
     dob: Optional[date] = None
-    gender: Optional[str] = None
     phone: Optional[str] = None
     email: Optional[str] = None
     address: Optional[str] = None
@@ -34,7 +32,6 @@ class PatientOut(BaseModel):
     first_name: str
     last_name: str
     dob: Optional[date]
-    gender: Optional[str]
     phone: Optional[str]
     email: Optional[str]
     address: Optional[str]
@@ -140,6 +137,9 @@ class DocumentOut(BaseModel):
     filename: str
     doc_type: Optional[str]
     status: str
+    # Written from the document's own text by the document agent, and shown to
+    # staff beside the extracted fields so they verify it rather than trust it.
+    summary: Optional[str] = None
     created_at: Optional[datetime]
 
 
@@ -191,9 +191,25 @@ class PublicChatRequest(BaseModel):
     message: str
 
 
+class PublicContact(BaseModel):
+    """Contact details exactly as the visitor typed them into the booking form.
+
+    The chat relays these to the model as prose ("My phone number is …") and the
+    model re-types them into `propose_booking`'s arguments, which is precisely
+    where a digit can go missing. Sending the typed values alongside the
+    confirmation lets the patient record be written from the form rather than
+    from the model's transcription of it.
+    """
+    first_name: str = ""
+    last_name: str = ""
+    phone: str = ""
+    email: str = ""
+
+
 class PublicConfirmRequest(BaseModel):
     session_id: str
     decision: str  # "approved" | "rejected"
+    contact: Optional[PublicContact] = None
 
 
 class PublicDoctorOut(BaseModel):
@@ -207,6 +223,13 @@ class PublicReasonOut(BaseModel):
     reason: str
     label: str
     specialty: str
+
+
+class PublicServiceOut(BaseModel):
+    id: str
+    name: str
+    duration_minutes: int
+    description: Optional[str] = None
 
 
 class PublicSlotsOut(BaseModel):

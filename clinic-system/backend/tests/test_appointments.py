@@ -1,14 +1,17 @@
 """Tests for appointment CRUD, conflict detection, and status transitions."""
 import pytest
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch, MagicMock
+from fastapi.testclient import TestClient
+from app.main import app
 from app.services.schedule_service import (
     check_conflict,
     complete_elapsed_appointments,
     get_available_slots,
     to_clinic,
 )
-from tests.conftest import make_chain, patch_db
+from tests.conftest import make_chain, patch_db, table_chain
 
 
 def _make_db(data):
@@ -320,3 +323,105 @@ def test_sweep_defaults_a_missing_duration():
     db, chain = _sweep_db([row])
     with patch_db(db):
         assert complete_elapsed_appointments() == 1
+
+
+# ---- A doctor sees only their own diary ----
+#
+# `staff.user_id` is what ties a login to a bookable staff row. Everything below
+# turns on that link: a doctor whose login resolves to a staff row is scoped to
+# it, and a doctor whose login resolves to nothing sees nothing rather than
+# everything — the failure has to be closed, not open.
+
+FUTURE = "2030-01-07T10:00:00+01:00"   # a Monday, far enough out that the
+                                       # elapsed-appointment sweep ignores it
+
+def _appointment(appt_id: str, staff_id: str) -> dict:
+    return {
+        "id": appt_id, "patient_id": "p-1", "staff_id": staff_id, "service_id": None,
+        "scheduled_at": FUTURE, "duration_min": 30, "status": "confirmed",
+        "notes": None, "created_at": None, "source": "staff",
+    }
+
+
+@contextmanager
+def _client_as(token: str, role: str, staff_row: dict | None, appointments: list[dict]):
+    """Client authenticated as `role`, whose login maps to `staff_row` (or None).
+
+    Yields `(client, appointments_chain)` so a test can assert on the filters
+    that actually reached postgrest, not just on the rows the mock handed back.
+
+    `table_chain` rather than `make_chain` because the appointments table is
+    read both ways here: as a list by `list_appointments`, and via
+    `.maybe_single()` by `get_appointment`, which must yield one row.
+    """
+    appointments_chain = table_chain(appointments)
+
+    def table(name):
+        if name == "user_roles":
+            return make_chain([{"roles": {"name": role}}])
+        if name == "staff":
+            chain = make_chain([staff_row] if staff_row else [])
+            chain.maybe_single.return_value = make_chain(staff_row)
+            return chain
+        if name == "appointments":
+            return appointments_chain
+        return make_chain([])
+
+    db = MagicMock()
+    db.table.side_effect = table
+    with patch_db(db):
+        c = TestClient(app)
+        c.headers.update({"Authorization": f"Bearer {token}"})
+        yield c, appointments_chain
+
+
+def test_doctor_listing_is_filtered_to_their_own_staff_id(admin_token):
+    """The filter is applied server-side, not merely defaulted client-side."""
+    with _client_as(admin_token, "doctor", {"id": "s-mine"}, [_appointment("a-1", "s-mine")]) as (c, chain):
+        resp = c.get("/appointments/")
+    assert resp.status_code == 200
+    chain.eq.assert_any_call("staff_id", "s-mine")
+
+
+def test_a_doctor_cannot_widen_the_list_to_a_colleague(admin_token):
+    """`?staff_id=` is overridden, not honoured — otherwise the scoping is a
+    default a caller can simply opt out of by passing someone else's id."""
+    with _client_as(admin_token, "doctor", {"id": "s-mine"}, []) as (c, chain):
+        resp = c.get("/appointments/?staff_id=s-colleague")
+    assert resp.status_code == 200
+    chain.eq.assert_any_call("staff_id", "s-mine")
+    assert ("staff_id", "s-colleague") not in [call.args for call in chain.eq.call_args_list]
+
+
+def test_a_doctor_with_no_staff_row_sees_nothing_rather_than_everything(admin_token):
+    """The seeded doctors carry no `user_id`, and a role granted by hand in SQL
+    links nothing — an unresolvable doctor must fail closed."""
+    with _client_as(admin_token, "doctor", None, [_appointment("a-1", "s-someone")]) as (c, _):
+        resp = c.get("/appointments/")
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+def test_a_doctor_cannot_fetch_a_colleagues_appointment_by_id(admin_token):
+    """Hiding it from the list is not enough if the id still resolves."""
+    with _client_as(admin_token, "doctor", {"id": "s-mine"}, [_appointment("a-1", "s-colleague")]) as (c, _):
+        resp = c.get("/appointments/a-1")
+    assert resp.status_code == 404
+
+
+def test_a_doctor_can_fetch_their_own_appointment_by_id(admin_token):
+    with _client_as(admin_token, "doctor", {"id": "s-mine"}, [_appointment("a-1", "s-mine")]) as (c, _):
+        resp = c.get("/appointments/a-1")
+    assert resp.status_code == 200
+    assert resp.json()["id"] == "a-1"
+
+
+def test_a_receptionist_still_sees_the_whole_clinic(receptionist_token):
+    """Scoping applies to doctors only — the front desk books for everyone, so
+    no `staff_id` filter should be applied on their behalf at all."""
+    rows = [_appointment("a-1", "s-one"), _appointment("a-2", "s-two")]
+    with _client_as(receptionist_token, "receptionist", None, rows) as (c, chain):
+        resp = c.get("/appointments/")
+    assert resp.status_code == 200
+    assert {a["id"] for a in resp.json()} == {"a-1", "a-2"}
+    assert not any(call.args[0] == "staff_id" for call in chain.eq.call_args_list)

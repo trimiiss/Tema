@@ -35,6 +35,32 @@ VALID_TRANSITIONS = {
 }
 
 
+def _own_staff_id(user: dict) -> str | None:
+    """The `staff.id` belonging to this login, or None if it isn't a doctor's.
+
+    `staff.user_id` is set when an admin creates a doctor *with* a login (see
+    `staff.create_staff`). A doctor account with no matching staff row — the
+    seeded doctors carry no `user_id`, and a role granted by hand in SQL links
+    nothing — resolves to None, which callers must read as "no appointments"
+    rather than "no filter": a doctor whose identity cannot be established must
+    see nothing, not everything.
+    """
+    row = execute_with_retry(
+        get_db().table("staff").select("id").eq("user_id", user["id"]).maybe_single()
+    ).data
+    return row["id"] if row else None
+
+
+def _doctor_only(user: dict) -> bool:
+    """A login that is a doctor and nothing else.
+
+    Someone holding admin or receptionist alongside doctor is acting in the
+    wider role — the clinic's own staff — so the scoping below does not apply.
+    """
+    roles = user.get("roles") or []
+    return "doctor" in roles and not ({"admin", "receptionist"} & set(roles))
+
+
 @router.get("/", response_model=list[AppointmentOut])
 def list_appointments(
     date_from: str = "",
@@ -52,12 +78,22 @@ def list_appointments(
     passes `source=patient_portal` because `status=proposed` alone also
     matches an appointment a receptionist just created and hasn't confirmed
     yet; both start in the same status.
+
+    A doctor sees only their own diary: `staff_id` is forced to their own staff
+    row rather than merely defaulted to it, so passing `?staff_id=<colleague>`
+    cannot widen it. Admins and receptionists still see the whole clinic.
     """
     # Settle anything whose time has passed before reading, so the list never
     # shows a confirmed appointment from this morning as still upcoming. Runs
     # here rather than on a scheduler because the prototype has none; it is one
     # extra query when there is nothing to promote.
     complete_elapsed_appointments()
+
+    if _doctor_only(user):
+        own = _own_staff_id(user)
+        if not own:
+            return []
+        staff_id = own
 
     db = get_db()
     q = db.table("appointments").select(APPOINTMENT_SELECT)
@@ -109,6 +145,12 @@ def get_appointment(
     db = get_db()
     resp = execute_with_retry(db.table("appointments").select(APPOINTMENT_SELECT).eq("id", appointment_id).maybe_single())
     if not resp.data:
+        raise HTTPException(status_code=404, detail="Appointment not found")
+    # Same scoping as `list_appointments`, enforced here too — otherwise a
+    # doctor who cannot see a colleague's appointment in the list could still
+    # fetch it by id. A 404 rather than a 403: whether a given id exists is
+    # itself not this doctor's to learn.
+    if _doctor_only(user) and resp.data["staff_id"] != _own_staff_id(user):
         raise HTTPException(status_code=404, detail="Appointment not found")
     return _flatten(resp.data)
 

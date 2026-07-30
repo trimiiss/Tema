@@ -189,6 +189,50 @@ Rules:
 """.strip()
 
 
+async def decide_route(input_text: str, work_done: Optional[List[dict]] = None) -> Dict[str, str]:
+    """Which agent should handle `input_text` — the routing decision alone.
+
+    Split out of `node_supervisor` so the routing *decision* can be exercised
+    without a run row, a graph or a database: `scripts/evaluate.py` measures
+    routing accuracy by calling exactly this, so the number it reports describes
+    the supervisor the app actually runs rather than a reimplementation of it
+    that can drift.
+
+    Returns `{"agent", "task", "reason"}`. An unrecognised agent name is
+    coerced to "fallback" here, so callers never see a name that is not a real
+    node. Raises on transport failure — the caller decides what a failed
+    routing call means, which is not the same thing for a live run as it is for
+    a benchmark.
+    """
+    context = json.dumps(
+        {"user_request": input_text, "work_done_so_far": work_done or []}, default=str
+    )
+    response = await _client().chat.completions.create(
+        model="gpt-4o",
+        messages=[
+            {"role": "system", "content": SUPERVISOR_PROMPT.format(directory=_directory())},
+            {"role": "user", "content": context},
+        ],
+        response_format={"type": "json_object"},
+        max_tokens=300,
+    )
+
+    try:
+        parsed = json.loads(response.choices[0].message.content or "{}")
+    except json.JSONDecodeError:
+        parsed = {}
+
+    choice = parsed.get("agent", "fallback")
+    if choice not in AGENT_NAMES and choice not in ("finish", "fallback"):
+        choice = "fallback"
+
+    return {
+        "agent": choice,
+        "task": parsed.get("task") or input_text,
+        "reason": parsed.get("reason", ""),
+    }
+
+
 async def node_supervisor(state: OrchestratorState) -> OrchestratorState:
     """Choose the next agent, or finish.
 
@@ -211,18 +255,9 @@ async def node_supervisor(state: OrchestratorState) -> OrchestratorState:
         return {**state, "active_agent": "finish"}
 
     done = [{"agent": a["agent"], "answer": a["text"]} for a in state["answers"]]
-    context = json.dumps({"user_request": state["input_text"], "work_done_so_far": done}, default=str)
 
     try:
-        response = await _client().chat.completions.create(
-            model="gpt-4o",
-            messages=[
-                {"role": "system", "content": SUPERVISOR_PROMPT.format(directory=_directory())},
-                {"role": "user", "content": context},
-            ],
-            response_format={"type": "json_object"},
-            max_tokens=300,
-        )
+        decision = await decide_route(state["input_text"], done)
     except Exception as exc:  # noqa: BLE001
         # Routing is the one thing that cannot degrade to "pick something and
         # hope": dispatching an agent on a guess is worse than not dispatching.
@@ -243,18 +278,9 @@ async def node_supervisor(state: OrchestratorState) -> OrchestratorState:
             }],
         }
 
-    try:
-        parsed = json.loads(response.choices[0].message.content or "{}")
-    except json.JSONDecodeError:
-        parsed = {}
-
-    choice = parsed.get("agent", "fallback")
-    if choice not in AGENT_NAMES and choice not in ("finish", "fallback"):
-        choice = "fallback"
-    task = parsed.get("task") or state["input_text"]
-
+    choice, task = decision["agent"], decision["task"]
     _log_step(run_id, "supervisor", "select_agent", {"request": state["input_text"]},
-              {"agent": choice, "task": task, "reason": parsed.get("reason", "")})
+              {"agent": choice, "task": task, "reason": decision["reason"]})
 
     return {
         **state,

@@ -1,0 +1,14 @@
+-- Store the summary the document agent already produces.
+--
+-- `document_agent.run_document_agent` has always returned a `summary` — a
+-- GPT-4o call per upload, prompted to stay strictly on the source text — but
+-- `ocr_service.process_document_async` wrote back only `status` and `doc_type`,
+-- so the summary was generated and discarded on every single upload.
+--
+-- Two requirements depend on it being kept: staff verify the summary alongside
+-- the extracted fields, and groundedness can only be measured against a summary
+-- that was actually stored next to the text it came from.
+--
+-- Additive and nullable: documents processed before this migration simply have
+-- no summary, and re-uploading is not required.
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS summary TEXT;

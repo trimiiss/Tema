@@ -81,6 +81,6 @@ def missing_fields(
     if not resp.data:
         raise HTTPException(status_code=404, detail="Patient not found")
     p = resp.data
-    required = ["first_name", "last_name", "dob", "gender", "phone", "email", "address"]
+    required = ["first_name", "last_name", "dob", "phone", "email", "address"]
     missing = [f for f in required if not p.get(f)]
     return {"patient_id": patient_id, "missing_fields": missing}

@@ -103,6 +103,22 @@ export default function DocumentsPage() {
                 <span className={`mt-1 inline-block px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_COLOR[selected.status] ?? ""}`}>{selected.status}</span>
               </div>
 
+              {/* Shown above the fields and before the Verify button on
+                  purpose: the summary is model-written prose, so it is the part
+                  of this panel a human most needs to read against the document
+                  itself rather than accept. */}
+              {selected.summary && (
+                <div>
+                  <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Summary</p>
+                  <p className="text-sm text-gray-700 leading-relaxed bg-gray-50 border border-gray-100 rounded-lg p-3">
+                    {selected.summary}
+                  </p>
+                  <p className="text-xs text-gray-400 mt-1.5">
+                    Written from the document text — check it before verifying.
+                  </p>
+                </div>
+              )}
+
               {fields.length > 0 && (
                 <div>
                   <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">Extracted Fields</p>

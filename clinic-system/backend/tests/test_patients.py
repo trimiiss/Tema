@@ -60,7 +60,7 @@ def test_flag_missing_fields_complete_patient():
     full = {
         "id": "p1",
         "first_name": "Alban", "last_name": "Krasniqi",
-        "dob": "1985-03-12", "gender": "M",
+        "dob": "1985-03-12",
         "phone": "+383-44-100001", "email": "alban@demo.test",
         "address": "Prishtina",
     }
@@ -126,7 +126,7 @@ def _receptionist_token():
 
 PATIENT_ROW = {
     "id": "p-new-001", "code": "P901", "first_name": "Testim", "last_name": "Prova",
-    "dob": "1990-04-17", "gender": "M", "phone": "044111222",
+    "dob": "1990-04-17", "phone": "044111222",
     "email": "testim@demo.test", "address": None, "notes": None,
     "created_at": "2026-07-25T10:00:00Z",
 }
@@ -143,7 +143,7 @@ def test_create_patient_with_dob_sends_json_serializable_payload():
     with _client_as_receptionist(PATIENT_ROW) as c:
         resp = c.post("/patients/", json={
             "code": "P901", "first_name": "Testim", "last_name": "Prova",
-            "dob": "1990-04-17", "gender": "M",
+            "dob": "1990-04-17",
         })
     assert resp.status_code == 201
     payload = c.chains["patients"].insert.call_args[0][0]
