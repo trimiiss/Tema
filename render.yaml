@@ -75,10 +75,16 @@ services:
       # the deploy to look perfectly healthy while every request from the site
       # fails CORS, which is a genuinely confusing way to spend an afternoon.
       #
+      # The three Vercel hosts are the project's two production aliases and the
+      # `main` branch alias; all three are stable across deploys. Per-deployment URLs
+      # (tema-<hash>-trimiiss-projects.vercel.app) are not, and `cors_origins()`
+      # in `core/config` compares origins exactly rather than by prefix, so a
+      # one-off preview build needs its own entry adding here to call the API.
+      #
       # localhost stays in the list so a local `next dev` can be pointed at the
-      # deployed API without a dashboard edit. Add preview domains here too.
+      # deployed API without a dashboard edit.
       - key: CORS_ORIGINS
-        value: https://tema-blue.vercel.app,http://localhost:3000
+        value: https://tema-flame.vercel.app,https://tema-trimiiss-projects.vercel.app,https://tema-git-main-trimiiss-projects.vercel.app,http://localhost:3000
 
       - key: CLINIC_TIMEZONE
         value: Europe/Tirane
