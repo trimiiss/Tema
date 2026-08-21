@@ -68,14 +68,17 @@ services:
       - key: SUPABASE_JWT_SECRET
         sync: false
 
-      # The browser origin allowed to call this API. Must be the deployed
-      # frontend's exact origin, scheme included and no trailing slash —
-      # e.g. https://clinic-system.vercel.app. Get this wrong and every request
-      # from the site fails CORS while the backend itself looks perfectly
-      # healthy, which is a genuinely confusing way to spend an afternoon.
-      # Comma-separated if you need to allow a preview domain too.
+      # The browser origins allowed to call this API — scheme included, no
+      # trailing slash, comma-separated. Unlike the keys above this is not a
+      # secret, it is a public hostname, so it is committed rather than
+      # prompted for: one less field to fill in by hand, and one less way for
+      # the deploy to look perfectly healthy while every request from the site
+      # fails CORS, which is a genuinely confusing way to spend an afternoon.
+      #
+      # localhost stays in the list so a local `next dev` can be pointed at the
+      # deployed API without a dashboard edit. Add preview domains here too.
       - key: CORS_ORIGINS
-        sync: false
+        value: https://tema-blue.vercel.app,http://localhost:3000
 
       - key: CLINIC_TIMEZONE
         value: Europe/Tirane
