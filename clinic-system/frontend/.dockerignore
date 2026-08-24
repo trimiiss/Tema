@@ -1,0 +1,24 @@
+# Secrets — Supabase anon key is public-safe, but keep local env out of the
+# image regardless; it's supplied via docker-compose build args / env_file.
+.env
+.env.*
+!.env.example
+
+# Reinstalled in the image; copying the host's (Windows) node_modules in
+# bloats the build context and can ship binaries that don't match the
+# container's linux/amd64 node:20-alpine.
+node_modules/
+
+# Rebuilt in the image; stale host output shouldn't leak into the container.
+.next/
+out/
+
+# Tooling and editor state
+.git/
+.gitignore
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+npm-debug.log*

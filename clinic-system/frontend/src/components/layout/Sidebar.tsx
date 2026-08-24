@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
-import { clearSessionStart } from "@/lib/session";
+import { clearSessionStart, clearChatId } from "@/lib/session";
 import { usersApi } from "@/lib/api";
 
 const NAV = [
@@ -27,15 +27,17 @@ export default function Sidebar() {
 
   async function logout() {
     await supabase.auth.signOut();
-    // Drop the agent-chat session marker, or signing back in on this same tab
-    // would resume the previous login's transcript — the thing scoping the
-    // history to one login was meant to prevent.
+    // Drop the agent-chat session marker and conversation id, or signing back
+    // in on this same tab would resume the previous login's transcript — the
+    // thing scoping the history to one login (and one conversation) was meant
+    // to prevent.
     clearSessionStart();
+    clearChatId();
     router.replace("/login");
   }
 
   return (
-    <aside className="w-60 min-h-screen bg-white border-r border-gray-200 flex flex-col">
+    <aside className="w-60 h-screen sticky top-0 shrink-0 bg-white border-r border-gray-200 flex flex-col overflow-y-auto">
       <div className="px-6 py-5 border-b border-gray-100">
         <div className="flex items-center gap-3">
           <div className="w-9 h-9 bg-primary-600 rounded-lg flex items-center justify-center">

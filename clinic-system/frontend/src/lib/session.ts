@@ -34,3 +34,36 @@ export async function sessionStart(): Promise<string> {
 export function clearSessionStart() {
   sessionStorage.removeItem(SESSION_START_KEY);
 }
+
+const CHAT_ID_KEY = "clinic_agent_chat_id";
+
+/** Identifies one Agent Chat conversation.
+ *
+ * Sent as `session_id` on every `/agent/run` so the backend can replay this
+ * conversation's earlier turns back to the model as history (the same
+ * mechanism the public booking chat already uses) and so `GET /agent/runs`
+ * can restore exactly this thread rather than every run from the current
+ * login. Kept in `sessionStorage` — like `sessionStart`, tab-scoped — so
+ * navigating away and back keeps the same conversation; "New Chat" and
+ * sign-out both mint a fresh one.
+ */
+export function chatId(): string {
+  let id = sessionStorage.getItem(CHAT_ID_KEY);
+  if (!id) {
+    id = crypto.randomUUID();
+    sessionStorage.setItem(CHAT_ID_KEY, id);
+  }
+  return id;
+}
+
+/** Starts a new conversation and returns its id. */
+export function newChatId(): string {
+  const id = crypto.randomUUID();
+  sessionStorage.setItem(CHAT_ID_KEY, id);
+  return id;
+}
+
+/** Called on sign-out alongside `clearSessionStart`. */
+export function clearChatId() {
+  sessionStorage.removeItem(CHAT_ID_KEY);
+}

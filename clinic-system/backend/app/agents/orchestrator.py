@@ -52,6 +52,13 @@ MAX_HOPS = 4
 # Names are graph node names and `agent_steps.agent_name` values at once.
 AGENT_NAMES = ("appointment_agent", "patient_agent", "document_agent", "reporting_agent")
 
+# How many earlier runs from this chat conversation to replay as history.
+# Same bound and reasoning as `public_orchestrator.MAX_HISTORY_RUNS`: unbounded
+# would eventually push the system prompt out of the useful part of the
+# context window, and a staff conversation resolves in a handful of turns or
+# the user starts a new chat.
+MAX_HISTORY_RUNS = 8
+
 # `agent_runs.intent` predates the supervisor and the UI still groups on it.
 _INTENT_OF = {
     "appointment_agent": "appointment",
@@ -107,6 +114,8 @@ class OrchestratorState(TypedDict):
     run_id: str
     user_id: str
     input_text: str
+    session_id: str                          # chat conversation id, "" if none
+    history: List[Dict[str, str]]            # earlier turns of this conversation
     intent: Optional[str]                    # domain word, for `agent_runs.intent`
     active_agent: Optional[str]              # agent the supervisor selected
     task: str                                # what that agent was asked to do
@@ -162,6 +171,41 @@ def _get_gate(gate_id: str) -> Optional[dict]:
     db = get_db()
     resp = execute_with_retry(db.table("approval_gates").select("*").eq("id", gate_id).maybe_single())
     return resp.data
+
+
+def _history_for_session(session_id: str, exclude_run_id: str, user_id: str) -> List[Dict[str, str]]:
+    """Earlier turns of this staff chat conversation, oldest first.
+
+    Mirrors `public_orchestrator._history_for_session`: only completed runs
+    with a stored answer contribute — one still `running` or `failed` has
+    nothing meaningful to replay — and turns come back as real chat messages
+    for `runtime._prior_turns` to fold in, not as system-prompt text.
+
+    Scoped to `session_id` *and* `user_id` together. `session_id` alone would
+    already be enough in practice (it's a client-minted UUID), but matching
+    `user_id` too keeps this on the same footing as every other query in this
+    file that reads one user's own runs, and costs nothing.
+    """
+    if not session_id:
+        return []
+    rows = execute_with_retry(
+        get_db().table("agent_runs").select("id,input_text,result,status")
+        .eq("session_id", session_id).eq("user_id", user_id)
+        .neq("id", exclude_run_id)
+        .order("created_at", desc=True)
+        .limit(MAX_HISTORY_RUNS)
+    ).data or []
+
+    turns: List[Dict[str, str]] = []
+    for run in reversed(rows):  # oldest first
+        if run.get("status") != "completed":
+            continue
+        message = (run.get("result") or {}).get("message")
+        if not message:
+            continue
+        turns.append({"role": "user", "content": run["input_text"]})
+        turns.append({"role": "assistant", "content": message})
+    return turns
 
 
 # ---- Supervisor ----
@@ -313,7 +357,8 @@ async def _run_agent(state: OrchestratorState, agent_name: str) -> OrchestratorS
     )
     try:
         outcome: AgentOutcome = await run_agent_loop(
-            spec, task=state["task"] or state["input_text"], context=context, on_step=on_step,
+            spec, task=state["task"] or state["input_text"], context=context,
+            history=state.get("history") or (), on_step=on_step,
         )
     except WriteToolExposed:
         # The one failure that must stay fatal. It means a `@mutating` function
@@ -469,11 +514,13 @@ def _build_graph() -> StateGraph:
 _graph = _build_graph().compile()
 
 
-def initial_state(run_id: str, input_text: str, user_id: str) -> OrchestratorState:
+def initial_state(run_id: str, input_text: str, user_id: str, session_id: str = "") -> OrchestratorState:
     return {
         "run_id": run_id,
         "user_id": user_id,
         "input_text": input_text,
+        "session_id": session_id,
+        "history": _history_for_session(session_id, run_id, user_id),
         "intent": None,
         "active_agent": None,
         "task": input_text,
@@ -489,9 +536,9 @@ def initial_state(run_id: str, input_text: str, user_id: str) -> OrchestratorSta
     }
 
 
-async def run_orchestrator(run_id: str, input_text: str, user_id: str) -> None:
+async def run_orchestrator(run_id: str, input_text: str, user_id: str, session_id: str = "") -> None:
     try:
-        await _graph.ainvoke(initial_state(run_id, input_text, user_id))
+        await _graph.ainvoke(initial_state(run_id, input_text, user_id, session_id))
     except Exception as e:
         _update_run(run_id, status="failed", result={"error": str(e)})
 

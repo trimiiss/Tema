@@ -26,13 +26,15 @@ def start_agent_run(
     run = execute_with_retry(db.table("agent_runs").insert({
         "user_id": user["id"],
         "input_text": body.input_text,
+        "session_id": body.session_id or None,
         "status": "running",
     })).data[0]
 
     run_id = run["id"]
 
     from app.agents.orchestrator import run_orchestrator
-    spawn(run_orchestrator(run_id, body.input_text, user["id"]), name=f"agent-run:{run_id}")
+    spawn(run_orchestrator(run_id, body.input_text, user["id"], body.session_id),
+          name=f"agent-run:{run_id}")
 
     return {**run, "steps": [], "gates": []}
 
@@ -40,20 +42,26 @@ def start_agent_run(
 @router.get("/runs", response_model=list[AgentRunOut])
 def list_runs(
     since: str = "",
+    session_id: str = "",
     user: dict = Depends(require_roles("admin", "receptionist")),
 ):
     """This user's agent runs, newest first.
 
-    `since` (an ISO instant) narrows them to one sitting. The chat page passes
-    the moment the current login began, because a conversation resumed days
-    later reads as one continuous thread otherwise — the user sees replies to
-    questions they no longer remember asking, and the agent is fed that stale
-    context as history. Omitted, the full recent list comes back.
+    `since` (an ISO instant) narrows them to one sitting. The dashboard's
+    activity widget passes the moment the current login began, because a run
+    from three days ago reads as "just happened" otherwise.
+
+    `session_id` narrows them to one chat conversation — the chat page passes
+    it so switching to a new conversation ("New Chat") doesn't resurrect the
+    previous one's transcript. Omitted, the full recent list (bounded by
+    `since` if that's given) comes back.
     """
     db = get_db()
     q = db.table("agent_runs").select("*").eq("user_id", user["id"])
     if since:
         q = q.gte("created_at", since)
+    if session_id:
+        q = q.eq("session_id", session_id)
     runs = execute_with_retry(q.order("created_at", desc=True).limit(20)).data
     if not runs:
         return []

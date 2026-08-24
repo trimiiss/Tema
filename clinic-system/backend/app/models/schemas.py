@@ -155,6 +155,13 @@ class DocumentFieldOut(BaseModel):
 # ---- Agent runs ----
 class AgentRunRequest(BaseModel):
     input_text: str
+    # A UUID the browser mints per conversation and keeps in sessionStorage —
+    # same idea as the public booking chat's `session_id`, just scoped to a
+    # logged-in staff member instead of an anonymous visitor. Optional so an
+    # older frontend build (or a direct API call) still works; omitting it
+    # just means the run gets no conversation memory. See
+    # `orchestrator._history_for_session`.
+    session_id: str = ""
 
 
 class AgentRunOut(BaseModel):

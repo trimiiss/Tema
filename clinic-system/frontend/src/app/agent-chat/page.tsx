@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import AppLayout from "@/components/layout/AppLayout";
 import { agentApi, usersApi } from "@/lib/api";
-import { sessionStart } from "@/lib/session";
+import { sessionStart, chatId, newChatId } from "@/lib/session";
 import toast from "react-hot-toast";
 
 // `run` is set only on messages rebuilt from history — it carries the steps and
@@ -189,15 +189,17 @@ export default function AgentChatPage() {
   // user. Reading it back is what makes the history survive navigation, a
   // reload and a different tab alike, rather than just an in-app route change.
   //
-  // Scoped to the *current login*, though: replaying a run from three days ago
-  // presents it as part of this conversation, so the user reads answers to
-  // questions they don't remember asking. `sessionStart` is when this login
-  // began, so signing out and back in starts a clean thread while navigation
+  // Scoped to the *current login* and the *current conversation*: replaying a
+  // run from three days ago, or from a chat the user deliberately moved on
+  // from with "New Chat", presents it as part of this thread, so the user
+  // reads answers to questions they don't remember asking. `sessionStart` is
+  // when this login began; `chatId` is this conversation's id — signing out,
+  // or starting a new chat, leaves a clean transcript behind while navigation
   // and reloads within one sitting still restore everything.
   useEffect(() => {
     let cancelled = false;
     sessionStart().then(since =>
-      agentApi.listRuns(since)
+      agentApi.listRuns(since, chatId())
         // History arrives asynchronously, so it must never overwrite a message
         // the user managed to send while it was in flight.
         .then(runs => { if (!cancelled) setMessages(prev => (prev.length ? prev : messagesFromRuns(runs))); })
@@ -216,7 +218,7 @@ export default function AgentChatPage() {
     setSending(true);
     setMessages(m => [...m, { role: "user", text: msg }]);
     try {
-      const run = await agentApi.run(msg);
+      const run = await agentApi.run(msg, chatId());
       setMessages(m => [...m, { role: "agent", text: `Processing… (run ${run.id.slice(0, 8)})`, runId: run.id }]);
     } catch (e: any) {
       toast.error(e.message);
@@ -224,6 +226,16 @@ export default function AgentChatPage() {
     } finally {
       setSending(false);
     }
+  }
+
+  /** Starts a fresh conversation: a new chat id, so the next message carries
+   * no memory of this one and `GET /agent/runs` won't restore it either. The
+   * old conversation isn't deleted — it just stops being "the" thread. */
+  function startNewChat() {
+    if (sending) return;
+    newChatId();
+    setMessages([]);
+    setInput("");
   }
 
   async function handleGateDecide(gateId: string, decision: "approved" | "rejected") {
@@ -265,7 +277,13 @@ export default function AgentChatPage() {
   return (
     <AppLayout>
       <div className="flex flex-col h-[calc(100vh-4rem)] max-w-3xl mx-auto">
-        <h1 className="text-2xl font-bold text-gray-900 mb-4">Agent Chat</h1>
+        <div className="flex items-center justify-between mb-4">
+          <h1 className="text-2xl font-bold text-gray-900">Agent Chat</h1>
+          <button onClick={startNewChat} disabled={sending || messages.length === 0}
+            className="px-3 py-1.5 text-sm font-medium text-gray-600 border border-gray-200 rounded-lg hover:bg-gray-50 hover:text-gray-900 transition disabled:opacity-40">
+            + New chat
+          </button>
+        </div>
 
         {/* Messages */}
         <div className="flex-1 overflow-y-auto space-y-4 pb-4">
