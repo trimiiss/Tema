@@ -286,8 +286,12 @@ async def resume_public_booking(run_id: str, gate_id: str, decision: str,
             "duration_min": payload.get("duration_min", 30),
             "status": "confirmed",
             "source": "patient_portal",
+            # No "[Patient portal]" tag here — `source` already carries that,
+            # and it's what the "Online Bookings" tab filters on. Repeating it
+            # in prose read as a second, redundant portal stamp on every row
+            # of a tab that is already scoped to portal bookings.
             "notes": (
-                f"[Patient portal] Reason: {payload.get('reason') or 'not specified'}. "
+                f"Reason: {payload.get('reason') or 'not specified'}. "
                 f"{payload.get('notes', '')}"
             ).strip(),
             "created_by": None,

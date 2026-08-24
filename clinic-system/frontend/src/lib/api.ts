@@ -149,13 +149,24 @@ export const reportsApi = {
 
 // ---- Agent ----
 export const agentApi = {
-  run: (inputText: string) =>
-    request<any>("/agent/run", { method: "POST", body: JSON.stringify({ input_text: inputText }) }),
+  // `sessionId` identifies the chat conversation (see `chatId` in lib/session)
+  // so the backend can replay this thread's earlier turns to the model.
+  run: (inputText: string, sessionId = "") =>
+    request<any>("/agent/run", {
+      method: "POST",
+      body: JSON.stringify({ input_text: inputText, session_id: sessionId }),
+    }),
   getRun: (id: string) => request<any>(`/agent/runs/${id}`),
-  // `since` scopes the history to the current login — see `sessionStart` in
-  // the agent-chat page for why a conversation shouldn't span logins.
-  listRuns: (since = "") =>
-    request<any[]>(`/agent/runs${since ? `?since=${encodeURIComponent(since)}` : ""}`),
+  // `since` scopes to the current login (see `sessionStart`); `sessionId`
+  // scopes to one chat conversation (see `chatId`) so "New Chat" doesn't
+  // resurrect the previous thread.
+  listRuns: (since = "", sessionId = "") => {
+    const params = new URLSearchParams();
+    if (since) params.set("since", since);
+    if (sessionId) params.set("session_id", sessionId);
+    const qs = params.toString();
+    return request<any[]>(`/agent/runs${qs ? `?${qs}` : ""}`);
+  },
   decide: (gateId: string, decision: "approved" | "rejected") =>
     request<any>(`/agent/approve/${gateId}`, { method: "POST", body: JSON.stringify({ decision }) }),
   // Server-Sent Events over fetch (native EventSource can't send an

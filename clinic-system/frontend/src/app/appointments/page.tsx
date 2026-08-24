@@ -167,7 +167,15 @@ export default function AppointmentsPage() {
                         {format(new Date(a.scheduled_at), "EEEE, MMM d 'at' HH:mm")} with{" "}
                         <span className="font-medium">{a.staff_name || "—"}</span>
                       </p>
-                      {a.notes && <p className="text-xs text-gray-400 mt-1 whitespace-pre-wrap">{a.notes}</p>}
+                      {a.notes && (
+                        <p className="text-xs text-gray-400 mt-1 whitespace-pre-wrap">
+                          {/* This tab is already scoped to portal bookings, so a
+                              "[Patient portal]" tag inside the note text itself
+                              (older rows, written before that line was dropped)
+                              would just repeat what the tab already says. */}
+                          {a.notes.replace(/^\[Patient portal\]\s*/, "")}
+                        </p>
+                      )}
                     </div>
                     {canManage ? (
                       <div className="flex gap-2 shrink-0">
