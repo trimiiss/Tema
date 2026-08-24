@@ -4,6 +4,8 @@ import AppLayout from "@/components/layout/AppLayout";
 import { agentApi, usersApi } from "@/lib/api";
 import { sessionStart, chatId, newChatId } from "@/lib/session";
 import toast from "react-hot-toast";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 // `run` is set only on messages rebuilt from history — it carries the steps and
 // gates `GET /agent/runs` already returned, so a finished run renders straight
@@ -161,9 +163,15 @@ function RunDetail({ runId, initialRun, onGateDecide, canDecide }: { runId: stri
       ))}
       {/* Result */}
       {run.result && (
-        <div className="bg-gray-50 rounded-lg p-3 text-xs text-gray-700">
-          <p className="font-semibold text-gray-500 mb-1">Result</p>
-          <pre className="whitespace-pre-wrap break-all">{JSON.stringify(run.result, null, 2)}</pre>
+        <div className="bg-gray-50 rounded-lg p-3 text-sm text-gray-700">
+          <p className="font-semibold text-gray-500 mb-1 text-xs">Result</p>
+          {run.result.message ? (
+            <div className="prose prose-sm max-w-none prose-p:my-1 prose-ul:my-1 prose-ol:my-1">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{run.result.message}</ReactMarkdown>
+            </div>
+          ) : (
+            <pre className="whitespace-pre-wrap break-all text-xs">{JSON.stringify(run.result, null, 2)}</pre>
+          )}
         </div>
       )}
     </div>
