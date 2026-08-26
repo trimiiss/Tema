@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import toast from "react-hot-toast";
-import { publicBookingApi, type Contact } from "@/lib/publicApi";
+import { publicBookingApi, newSessionId, type Contact } from "@/lib/publicApi";
 import { ReasonPicker, ServicePicker, DoctorPicker, SlotPicker, ConfirmationCard } from "./BookingCards";
 import ContactForm from "./ContactForm";
 
@@ -149,6 +149,10 @@ export default function BookingChat() {
   // What the visitor typed into the contact form, kept verbatim so it can be
   // sent with the confirmation instead of the model's version of it.
   const [contact, setContact] = useState<Contact | undefined>();
+  // Bumped by "New chat" purely to remount `ContactForm`, which keeps the
+  // typed name and phone in its own state and would otherwise carry the last
+  // visitor's details into the new conversation.
+  const [chatKey, setChatKey] = useState(0);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
@@ -178,6 +182,20 @@ export default function BookingChat() {
     setDoctorNames(prev => ({ ...prev, ...names }));
   }
 
+  /** Starts a fresh conversation mid-visit: a new session id, so the next
+   * message carries no memory of this one and `GET /public/booking/runs`
+   * won't restore it either. Everything derived from the old thread —
+   * doctor names, contact details — goes with it. */
+  function startNewChat() {
+    if (sending) return;
+    newSessionId();
+    setMessages([]);
+    setInput("");
+    setDoctorNames({});
+    setContact(undefined);
+    setChatKey(k => k + 1);
+  }
+
   async function send(text?: string) {
     const msg = (text ?? input).trim();
     if (!msg || sending) return;
@@ -197,6 +215,15 @@ export default function BookingChat() {
 
   return (
     <div className="flex flex-col h-[calc(100vh-9rem)] max-w-2xl mx-auto w-full">
+      {messages.length > 0 && (
+        <div className="flex justify-end pb-2">
+          <button onClick={startNewChat} disabled={sending}
+            className="px-3 py-1.5 text-xs font-medium text-gray-500 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 hover:text-gray-900 transition disabled:opacity-40">
+            + New chat
+          </button>
+        </div>
+      )}
+
       <div className="flex-1 overflow-y-auto space-y-4 pb-4 px-1">
         {loadingHistory && messages.length === 0 && (
           <p className="text-sm text-gray-400">Loading…</p>
@@ -238,7 +265,7 @@ export default function BookingChat() {
       </div>
 
       <div className="border-t border-gray-200 pt-3 space-y-2">
-        <ContactForm onSend={send} onContact={setContact} disabled={sending} />
+        <ContactForm key={chatKey} onSend={send} onContact={setContact} disabled={sending} />
         <div className="flex gap-3">
           <input
             value={input}

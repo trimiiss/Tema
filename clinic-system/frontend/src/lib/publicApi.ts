@@ -1,20 +1,50 @@
 // API client for the public booking chat (`/book`). Deliberately separate
 // from `lib/api.ts`: that client attaches a Supabase session bearer token to
 // every request, and this page has no session — the visitor hasn't logged in
-// and never will. Identity here is a UUID the browser mints once and keeps in
-// localStorage, sent as `session_id` in the body/query instead of a header.
+// and never will. Identity here is a UUID the browser mints per visit, sent
+// as `session_id` in the body/query instead of a header.
 
 const BASE = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000";
 const SESSION_KEY = "clinic_booking_session_id";
+const TOUCHED_KEY = "clinic_booking_session_touched";
 
-/** The visitor's session id, creating one on first visit. */
+/** How long an idle booking conversation stays resumable. A visit to the
+ * booking page is one errand: coming back hours later means booking something
+ * else, not finishing last night's half-typed sentence. */
+const IDLE_MS = 30 * 60 * 1000;
+
+/** The visitor's session id, minting a fresh one for each new visit.
+ *
+ * `sessionStorage`, not `localStorage`: it dies with the tab, so a visitor who
+ * returns tomorrow — or opens the page in a second tab — starts a clean
+ * conversation instead of reading back a transcript they don't remember. That
+ * also matters to the agent, not just the reader: `_history_for_session` in
+ * `public_orchestrator.py` replays every run sharing this id as model context,
+ * so a long-lived id feeds an old booking's details into a new request.
+ *
+ * A reload, or a trip elsewhere and back in the same tab, still resumes — that
+ * is what keeps a mid-booking refresh from losing the thread — until `IDLE_MS`
+ * of silence retires it.
+ */
 export function getSessionId(): string {
   if (typeof window === "undefined") return "";
-  let id = window.localStorage.getItem(SESSION_KEY);
-  if (!id) {
-    id = crypto.randomUUID();
-    window.localStorage.setItem(SESSION_KEY, id);
-  }
+  // One-time cleanup of the old forever-key: that value is exactly what made
+  // every visit resume the same conversation.
+  window.localStorage.removeItem(SESSION_KEY);
+  const store = window.sessionStorage;
+  const id = store.getItem(SESSION_KEY);
+  const touched = Number(store.getItem(TOUCHED_KEY) ?? 0);
+  if (!id || Date.now() - touched > IDLE_MS) return newSessionId();
+  store.setItem(TOUCHED_KEY, String(Date.now()));
+  return id;
+}
+
+/** Starts a fresh booking conversation and returns its id. The earlier runs
+ * aren't deleted — staff still see them — they just stop being *this* chat. */
+export function newSessionId(): string {
+  const id = crypto.randomUUID();
+  window.sessionStorage.setItem(SESSION_KEY, id);
+  window.sessionStorage.setItem(TOUCHED_KEY, String(Date.now()));
   return id;
 }
 

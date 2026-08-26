@@ -190,7 +190,7 @@ class ReportRequest(BaseModel):
 
 # ---- Public booking (unauthenticated) ----
 # The visitor has no JWT, so `session_id` — a UUID the browser generates and
-# keeps in localStorage — is the only thing identifying "their" runs and gates.
+# keeps in sessionStorage — is the only thing identifying "their" runs and gates.
 # Every public endpoint that reads or decides a run/gate checks it against
 # `agent_runs.session_id`.
 class PublicChatRequest(BaseModel):

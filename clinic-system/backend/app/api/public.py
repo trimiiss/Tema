@@ -5,8 +5,9 @@ strangers. This one can't: a visitor books before they have any account at
 all. Two things stand in for that missing auth layer, and both matter more
 here than anywhere else in the codebase:
 
-- `session_id` (a UUID the browser mints and keeps in localStorage) is the
-  only thing distinguishing one visitor's runs and gates from another's.
+- `session_id` (a UUID the browser mints per visit and keeps in
+  sessionStorage) is the only thing distinguishing one visitor's runs and
+  gates from another's.
   Every read or decide on a `run_id`/`gate_id` below re-checks it against
   `agent_runs.session_id` and returns a plain 404 on mismatch — the same
   status as "doesn't exist" — so this can't be used to enumerate other
