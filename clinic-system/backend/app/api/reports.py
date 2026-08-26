@@ -19,7 +19,7 @@ router = APIRouter(prefix="/reports", tags=["reports"])
 def report_summary(
     date_from: date,
     date_to: date,
-    user: dict = Depends(require_roles("admin", "receptionist")),
+    user: dict = Depends(require_roles("admin", "receptionist", "doctor")),
 ):
     summary = get_appointment_summary(date_from, date_to)
     no_shows = get_no_show_report(date_from, date_to)
@@ -35,7 +35,7 @@ def report_summary(
 @router.post("/generate")
 def generate_report(
     body: ReportRequest,
-    user: dict = Depends(require_roles("admin", "receptionist")),
+    user: dict = Depends(require_roles("admin", "receptionist", "doctor")),
 ):
     summary = get_appointment_summary(body.date_from, body.date_to)
     no_shows = get_no_show_report(body.date_from, body.date_to)

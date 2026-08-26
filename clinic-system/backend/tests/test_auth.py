@@ -98,6 +98,38 @@ def test_admin_can_still_read_patients(admin_token):
         assert c.get("/patients/").status_code == 200
 
 
+# ---- Operational reports are readable by every role ----
+
+def test_doctor_can_read_report_summary(admin_token):
+    """Reports are a read; doctors are read-only, not blind.
+
+    `/reports` was the only read-oriented router that left `doctor` out of
+    `require_roles`, while the Reports nav item is shown to every role — a
+    doctor opened the page and every stat silently rendered 0.
+    """
+    with make_client(admin_token, "doctor") as c:
+        r = c.get("/reports/summary", params={"date_from": "2026-07-01", "date_to": "2026-07-31"})
+        assert r.status_code == 200
+
+
+def test_doctor_can_generate_report(admin_token):
+    with make_client(admin_token, "doctor") as c:
+        r = c.post("/reports/generate", json={"date_from": "2026-07-01", "date_to": "2026-07-31", "format": "csv"})
+        assert r.status_code == 200
+
+
+def test_no_role_cannot_read_report_summary(no_role_token):
+    with make_client(no_role_token, None) as c:
+        r = c.get("/reports/summary", params={"date_from": "2026-07-01", "date_to": "2026-07-31"})
+        assert r.status_code == 403
+
+
+def test_doctor_cannot_read_audit_log(admin_token):
+    """The audit trail stays admin-only — it is oversight, not an ops report."""
+    with make_client(admin_token, "doctor") as c:
+        assert c.get("/reports/audit-log").status_code == 403
+
+
 def test_health_endpoint_is_public():
     c = TestClient(app)
     r = c.get("/health")
