@@ -1,4 +1,6 @@
 "use client";
+import Link from "next/link";
+import { ArrowLeft } from "lucide-react";
 import BookingChat from "./BookingChat";
 
 // Deliberately NOT wrapped in `AppLayout` — that component redirects anyone
@@ -10,6 +12,15 @@ export default function PublicBookingPage() {
   return (
     <div className="min-h-screen flex flex-col bg-gray-50">
       <header className="border-b border-gray-200 bg-white px-6 py-4">
+        {/* Same dead end as /login had: this route has no nav of its own, so a
+            visitor who changes their mind has nowhere to go but the back button. */}
+        <Link
+          href="/"
+          className="inline-flex items-center gap-1.5 text-xs font-medium text-gray-400 hover:text-primary-600 transition-colors mb-1.5"
+        >
+          <ArrowLeft className="w-3.5 h-3.5" />
+          Back to Trim&apos;s Clinic
+        </Link>
         <h1 className="text-lg font-bold text-gray-900">Book an Appointment</h1>
         <p className="text-xs text-gray-500">Chat with us to find the right doctor and time.</p>
       </header>

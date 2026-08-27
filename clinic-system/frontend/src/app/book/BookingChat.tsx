@@ -40,6 +40,7 @@ function pickerSteps(steps: any[] = []) {
   for (const s of steps) byAction[s.action] = s; // later ones overwrite earlier
   return {
     reasons: byAction["list_reasons"]?.output?.reasons,
+    services: byAction["list_services"]?.output?.services,
     doctors: byAction["list_doctors"]?.output?.doctors,
     slots: byAction["list_available_slots"]?.output,
     earliest: byAction["find_earliest_slot"]?.output,
@@ -114,7 +115,7 @@ function BookingRunDetail({
 
   const pending = run.gates?.find((g: any) => g.status === "pending");
   const decided = run.gates?.filter((g: any) => g.status !== "pending") ?? [];
-  const { reasons, doctors, slots, earliest } = pickerSteps(run.steps);
+  const { reasons, services, doctors, slots, earliest } = pickerSteps(run.steps);
 
   return (
     <div className="space-y-2">
@@ -125,6 +126,11 @@ function BookingRunDetail({
           results — never shown once the request has moved to a confirmation
           or is already finished, so a resolved turn doesn't invite re-picking. */}
       {!pending && !run.result && reasons && <ReasonPicker reasons={reasons} onPick={onSend} />}
+      {/* The opening screen offers these too, but the agent calls
+          `list_services` mid-conversation whenever the visitor hasn't settled
+          on one — without this the visitor is asked to choose from a list only
+          the model can see, and has to type the name back exactly. */}
+      {!pending && !run.result && services && <ServicePicker services={services} onPick={onSend} />}
       {!pending && !run.result && doctors && <DoctorPicker doctors={doctors} onPick={onSend} />}
       {!pending && !run.result && slots?.slots && (
         <SlotPicker slots={slots.slots} doctorName={doctorNames[slots.staff_id]} onPick={onSend} />

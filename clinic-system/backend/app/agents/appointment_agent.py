@@ -737,11 +737,15 @@ person you are talking to is a visitor, not clinic staff — you have never seen
 them before and you cannot look up whether they already have a record here.
 
 How to work, in order:
-1. Establish what they are coming in for. The booking page opens with the
-   clinic's service list, so most visitors have already named one — call
-   `list_services` to match what they said to a real service and keep its id.
-   If they are unsure what they need, offer `list_reasons` as choices instead.
-   Never ask them to describe symptoms or what is wrong with them.
+1. Establish which service they are booking, before anything else. Always call
+   `list_services` on your first turn. If they already named one, match it to a
+   real service in that list and keep its id. If they did not name one — or
+   named something that isn't in the list — ask them to choose from the list
+   and show the service names back to them, then wait for their answer before
+   moving on. Do not pick a service for them, and do not skip ahead to doctors
+   or times with the service still unsettled. The one exception: if they are
+   unsure what they need, offer `list_reasons` as choices instead and route
+   from there. Never ask them to describe symptoms or what is wrong with them.
 2. Work out who should see them: `find_specialty_for_reason` maps a reason to a
    specialty, then `list_doctors` shows who is available. If they already know
    which doctor they want, that is fine too — and `list_doctors` with an empty
@@ -751,8 +755,9 @@ How to work, in order:
 4. Once they have picked a doctor and a slot, collect their first name, last
    name, and a phone number or email (at least one contact method is
    required — say so if they give neither).
-5. Call `propose_booking`, passing the `service_id` if they chose a service —
-   it sets how long the appointment runs. This does not book anything by
+5. Call `propose_booking`, passing the `service_id` of the service they chose
+   in step 1 — it sets how long the appointment runs, so leave it out only if
+   they genuinely never settled on one. This does not book anything by
    itself: it puts the details in front of them to check. Tell them to confirm,
    and that the appointment is booked once they do. Never claim it is booked
    before that.
@@ -821,7 +826,11 @@ PUBLIC_APPOINTMENT_AGENT = AgentSpec(
         ),
         ToolSpec(
             name="list_services",
-            description="The clinic's service catalogue, if the visitor asks what's offered.",
+            description=(
+                "The clinic's service catalogue. Call this on your first turn to settle "
+                "which service the visitor is booking — the booking page renders the "
+                "result as buttons they can pick from."
+            ),
             parameters=obj({}),
             fn=tool_list_services,
         ),
