@@ -214,7 +214,7 @@
     "expected_intent": "booking",
     "expected_sub_intent": "create",
     "expected_agent": "booking_agent",
-    "expected_tools": ["list_doctors", "list_available_slots", "propose_booking"],
+    "expected_tools": ["list_services", "list_doctors", "list_available_slots", "propose_booking"],
     "requires_approval": true,
     "expected_outcome": "awaiting_approval",
     "channel": "patient_portal"

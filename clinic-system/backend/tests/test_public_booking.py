@@ -28,6 +28,10 @@ from tests.conftest import make_chain, patch_db, table_chain
 from tests.test_agent_autonomy import calls, fed_back, says, scripted, tool_call
 
 STAFF = {"id": "s-1", "full_name": "Dr. Arben Hoxha", "specialty": "General Practice", "bio": None}
+# A 15-minute service, deliberately not the 30-minute default, so a test that
+# asserts the duration proves it came from this row rather than coinciding.
+SERVICE = {"id": "svc-1", "name": "Document Verification",
+           "duration_minutes": 15, "description": "Administrative document review"}
 # 2026-08-03 is a Monday; 2026-08-02 a Sunday. No `schedules` rows means the
 # clinic default (Mon–Fri 09:00–17:00) applies, so the real slot logic runs.
 MONDAY_10 = "2026-08-03T10:00"
@@ -36,9 +40,10 @@ SUNDAY_10 = "2026-08-02T10:00"
 
 @pytest.fixture
 def clinic_db():
-    """One active doctor, default hours, nothing booked, no patients on file."""
+    """One active doctor, one service, default hours, nothing booked."""
     tables = {
         "staff": table_chain([STAFF]),
+        "services": table_chain([SERVICE]),
         "schedules": make_chain([]),
         "appointments": make_chain([]),
         "patients": make_chain([]),
@@ -166,14 +171,15 @@ def test_specialty_for_unknown_reason_falls_back_too():
 # ---------------------------------------------------------- propose_booking
 
 def test_propose_booking_requires_a_contact_method(clinic_db):
-    result = propose_booking(first_name="Arta", last_name="Berisha", staff_id="s-1", scheduled_at=MONDAY_10)
+    result = propose_booking(first_name="Arta", last_name="Berisha", staff_id="s-1",
+                             scheduled_at=MONDAY_10, service_id="svc-1")
     assert result["proposed"] is False
     assert "phone number or email" in result["error"]
 
 
 def test_propose_booking_requires_a_last_name(clinic_db):
     result = propose_booking(first_name="Arta", last_name="", staff_id="s-1",
-                              scheduled_at=MONDAY_10, phone="044111222")
+                              scheduled_at=MONDAY_10, phone="044111222", service_id="svc-1")
     assert result["proposed"] is False
     assert "last name" in result["error"]
 
@@ -182,7 +188,7 @@ def test_propose_booking_refuses_a_slot_the_doctor_does_not_work(clinic_db):
     """Same two-check rule as the staff appointment agent: a free slot is not
     the same as a slot the doctor actually works."""
     result = propose_booking(first_name="Arta", last_name="Berisha", staff_id="s-1",
-                              scheduled_at=SUNDAY_10, phone="044111222")
+                              scheduled_at=SUNDAY_10, phone="044111222", service_id="svc-1")
     assert result["proposed"] is False
     assert result["error"] == "The doctor does not work that slot."
     assert result["open_slots"] == []
@@ -190,7 +196,8 @@ def test_propose_booking_refuses_a_slot_the_doctor_does_not_work(clinic_db):
 
 def test_propose_booking_proposes_a_workable_slot_without_touching_patients(clinic_db):
     result = propose_booking(first_name="Arta", last_name="Berisha", staff_id="s-1",
-                              scheduled_at=MONDAY_10, phone="044111222", reason="general_checkup")
+                              scheduled_at=MONDAY_10, phone="044111222",
+                              service_id="svc-1", reason="general_checkup")
     assert result["proposed"] is True
     assert result["action"]["action"] == "create_booking"
     assert result["action"]["staff_name"] == "Dr. Arben Hoxha"
@@ -204,33 +211,22 @@ def test_propose_booking_proposes_a_workable_slot_without_touching_patients(clin
     assert clinic_db.table("patients").insert.call_count == 0
 
 
-# ---- The chosen service sets the duration ----
+# ---- The chosen service is required, and it sets the duration ----
 #
-# The booking page opens with the clinic's service catalogue, and those services
-# are not all the same length. Blocking 30 minutes for a 15-minute document
-# check takes a slot off the doctor's day that nobody is using. The duration is
-# read from the service's own row — never from the model, which is only trusted
-# to pass back an id it read out of `list_services`.
-
-SERVICE = {"id": "svc-1", "name": "Document Verification",
-           "duration_minutes": 15, "description": "Administrative document review"}
-
-
-@pytest.fixture
-def clinic_db_with_service(clinic_db):
-    """`clinic_db`, plus a 15-minute service to book against."""
-    tables = {
-        "staff": table_chain([STAFF]),
-        "services": table_chain([SERVICE]),
-        "schedules": make_chain([]),
-        "appointments": make_chain([]),
-        "patients": make_chain([]),
-    }
-    clinic_db.table.side_effect = lambda name: tables.get(name, make_chain([]))
-    return clinic_db
+# Which service is step 1 of the booking conversation, and it is what decides
+# how long to block out — the clinic's services are not all the same length, and
+# blocking 30 minutes for a 15-minute document check takes a slot off the
+# doctor's day that nobody is using. The duration is read from the service's own
+# row, never from the model, which is only trusted to pass back an id it read
+# out of `list_services`.
+#
+# A missing or unrecognised service is a refusal rather than a fallback to the
+# 30-minute default: guessing books the visitor for a length nobody chose, and
+# a refusal is fed back as an ordinary tool result, which is what makes the
+# agent go and ask instead of proceeding.
 
 
-def test_propose_booking_takes_its_duration_from_the_service(clinic_db_with_service):
+def test_propose_booking_takes_its_duration_from_the_service(clinic_db):
     result = propose_booking(first_name="Arta", last_name="Berisha", staff_id="s-1",
                              scheduled_at=MONDAY_10, phone="044111222", service_id="svc-1")
     assert result["proposed"] is True
@@ -241,29 +237,56 @@ def test_propose_booking_takes_its_duration_from_the_service(clinic_db_with_serv
     assert "Document Verification" in result["description"]
 
 
-def test_propose_booking_without_a_service_falls_back_to_the_default(clinic_db):
-    """A visitor who never picked a service still gets booked."""
+def test_propose_booking_refuses_without_a_service(clinic_db):
+    """No service chosen is a refusal the agent has to go and resolve."""
     result = propose_booking(first_name="Arta", last_name="Berisha", staff_id="s-1",
                              scheduled_at=MONDAY_10, phone="044111222")
-    assert result["proposed"] is True
-    assert result["action"]["duration_min"] == 30
-    assert result["action"]["service_id"] is None
+    assert result["proposed"] is False
+    assert "remind the visitor to pick one" in result["error"]
 
 
-def test_propose_booking_ignores_a_service_id_that_resolves_to_nothing(clinic_db):
-    """An invented id must not refuse the booking — the visitor picked a real
-    doctor and a real slot, which is enough. It falls back to the default."""
+def test_the_refusal_hands_back_the_services_to_remind_them_with(clinic_db):
+    """The reminder ships with the catalogue.
+
+    Otherwise the model re-asks in prose and the visitor is choosing from a
+    list only the model can see — and the booking page has no rows to render
+    as pickable cards.
+    """
+    result = propose_booking(first_name="Arta", last_name="Berisha", staff_id="s-1",
+                             scheduled_at=MONDAY_10, phone="044111222")
+    assert result["proposed"] is False
+    assert result["services"] == [SERVICE]
+
+
+def test_propose_booking_refuses_a_service_id_that_resolves_to_nothing(clinic_db):
+    """An id the model invented is the same as no service at all.
+
+    Booking it anyway would silently reserve the default 30 minutes for a
+    service the clinic may not even offer.
+    """
+    clinic_db.table.side_effect = lambda name: table_chain([]) if name == "services" else make_chain([])
     result = propose_booking(first_name="Arta", last_name="Berisha", staff_id="s-1",
                              scheduled_at=MONDAY_10, phone="044111222", service_id="svc-nope")
-    assert result["proposed"] is True
-    assert result["action"]["duration_min"] == 30
-    assert result["action"]["service_id"] is None
+    assert result["proposed"] is False
+    assert "remind the visitor to pick one" in result["error"]
+
+
+def test_the_service_is_checked_before_anything_else_is_asked_for(clinic_db):
+    """Step 1 of the conversation is the first thing the validator checks, so a
+    visitor is asked for the service before being asked for a contact number."""
+    result = propose_booking(first_name="Arta", last_name="", staff_id="s-nope",
+                             scheduled_at=SUNDAY_10)
+    assert result["proposed"] is False
+    assert "remind the visitor to pick one" in result["error"]
 
 
 def test_propose_booking_refuses_an_unknown_doctor(clinic_db):
-    clinic_db.table.side_effect = lambda name: table_chain([]) if name == "staff" else make_chain([])
+    clinic_db.table.side_effect = lambda name: {
+        "staff": table_chain([]),
+        "services": table_chain([SERVICE]),
+    }.get(name, make_chain([]))
     result = propose_booking(first_name="Arta", last_name="Berisha", staff_id="s-does-not-exist",
-                              scheduled_at=MONDAY_10, phone="044111222")
+                              scheduled_at=MONDAY_10, phone="044111222", service_id="svc-1")
     assert result["proposed"] is False
     assert "No active doctor" in result["error"]
 
@@ -278,6 +301,8 @@ def test_propose_booking_refuses_an_id_postgres_cannot_even_compare(clinic_db):
     could not act on; as a refusal it is one more tool result to replan from.
     """
     def raising_staff_table(name):
+        if name == "services":
+            return table_chain([SERVICE])
         if name != "staff":
             return make_chain([])
         chain = table_chain([])
@@ -286,7 +311,7 @@ def test_propose_booking_refuses_an_id_postgres_cannot_even_compare(clinic_db):
 
     clinic_db.table.side_effect = raising_staff_table
     result = propose_booking(first_name="Arta", last_name="Berisha", staff_id="doc123",
-                              scheduled_at=MONDAY_10, phone="044111222")
+                              scheduled_at=MONDAY_10, phone="044111222", service_id="svc-1")
     assert result["proposed"] is False
     assert "No active doctor" in result["error"]
 
@@ -351,7 +376,7 @@ async def test_a_workable_booking_opens_a_gate_and_writes_nothing(clinic_db):
 
     client = scripted(calls(tool_call(
         "c1", "propose_booking", first_name="Arta", last_name="Berisha",
-        staff_id="s-1", scheduled_at=MONDAY_10, phone="044111222",
+        staff_id="s-1", scheduled_at=MONDAY_10, phone="044111222", service_id="svc-1",
     )))
     with patch("app.agents.runtime.get_client", return_value=client), \
          patch.object(po, "_log_step", return_value="step-1"), \

@@ -676,6 +676,31 @@ def propose_booking(
     phone = (phone or "").strip()
     email = (email or "").strip()
 
+    # Which service, first — it is step 1 of the conversation and it is what
+    # sets how long to block out: a 15-minute document check must not reserve
+    # the 30 minutes a checkup needs, and the length comes from the service's
+    # own row, never from the model. An absent or unrecognised service is a
+    # refusal rather than a silent fallback to the default, because guessing
+    # books the visitor for a length nobody chose. The refusal is fed back as
+    # an ordinary tool result, which is what sends the model to go and ask.
+    service = _load_service(service_id)
+    if not service:
+        # The refusal carries the catalogue with it. Left to "ask them again",
+        # a model tends to re-ask in prose — and the visitor is then choosing
+        # from a list only the model can see. Handing back the real rows means
+        # the reminder names the actual services, and the booking page renders
+        # them as the same pickable cards `list_services` produces.
+        return {
+            "proposed": False,
+            "error": (
+                "No service chosen yet — remind the visitor to pick one before this can "
+                "be booked. Show them the services below, ask which they want, and call "
+                "`propose_booking` again with that service's id as `service_id`."
+            ),
+            **tool_list_services(),
+        }
+    duration = int(service["duration_minutes"])
+
     if not last_name:
         return {"proposed": False, "error": "A last name is required to submit a booking request."}
     if not phone and not email:
@@ -689,14 +714,6 @@ def propose_booking(
         when = parse_when(scheduled_at)
     except ValueError as exc:
         return {"proposed": False, "error": f"Could not read '{scheduled_at}' as a date and time: {exc}"}
-
-    # How long to block out comes from the service's own row, never from the
-    # model — a 15-minute document check must not reserve the 30 minutes a
-    # checkup needs, and vice versa. An unrecognised or absent service falls
-    # back to the default rather than refusing: the visitor picked a doctor and
-    # a time, and that is enough to book.
-    service = _load_service(service_id)
-    duration = int(service["duration_minutes"]) if service else DEFAULT_DURATION_MIN
 
     # Reuses the staff agent's `_slot_is_workable` — same conflict + working-hours
     # check either way, just with no `exclude_appointment_id` (this always books
@@ -716,17 +733,16 @@ def propose_booking(
             "email": email,
             "staff_id": staff["id"],
             "staff_name": staff["full_name"],
-            "service_id": service["id"] if service else None,
-            "service_name": service["name"] if service else None,
+            "service_id": service["id"],
+            "service_name": service["name"],
             "scheduled_at": when.isoformat(),
             "duration_min": duration,
             "reason": reason or "",
             "notes": notes or "",
         },
         "description": (
-            f"Book {patient_name}"
-            + (f" for a {service['name']}" if service else "")
-            + f" with {staff['full_name']} on {when.strftime('%Y-%m-%d %H:%M')}"
+            f"Book {patient_name} for a {service['name']} with {staff['full_name']} "
+            f"on {when.strftime('%Y-%m-%d %H:%M')}"
         ),
     }
 
@@ -740,12 +756,13 @@ How to work, in order:
 1. Establish which service they are booking, before anything else. Always call
    `list_services` on your first turn. If they already named one, match it to a
    real service in that list and keep its id. If they did not name one — or
-   named something that isn't in the list — ask them to choose from the list
-   and show the service names back to them, then wait for their answer before
-   moving on. Do not pick a service for them, and do not skip ahead to doctors
-   or times with the service still unsettled. The one exception: if they are
-   unsure what they need, offer `list_reasons` as choices instead and route
-   from there. Never ask them to describe symptoms or what is wrong with them.
+   named something that isn't in the list — ask them to choose from the list,
+   showing the service names back to them, and wait for their answer before
+   moving on. Do not pick a service for them, and do not move on to doctors or
+   times with the service still unsettled. If they are unsure what they need,
+   offer `list_reasons` to narrow it down and then come back and confirm which
+   service that means — every booking needs one. Never ask them to describe
+   symptoms or what is wrong with them.
 2. Work out who should see them: `find_specialty_for_reason` maps a reason to a
    specialty, then `list_doctors` shows who is available. If they already know
    which doctor they want, that is fine too — and `list_doctors` with an empty
@@ -755,12 +772,12 @@ How to work, in order:
 4. Once they have picked a doctor and a slot, collect their first name, last
    name, and a phone number or email (at least one contact method is
    required — say so if they give neither).
-5. Call `propose_booking`, passing the `service_id` of the service they chose
-   in step 1 — it sets how long the appointment runs, so leave it out only if
-   they genuinely never settled on one. This does not book anything by
-   itself: it puts the details in front of them to check. Tell them to confirm,
-   and that the appointment is booked once they do. Never claim it is booked
-   before that.
+5. Call `propose_booking`, passing the `service_id` from step 1 — it is
+   required and it sets how long the appointment runs, so if you reach this
+   point without one the call is refused and you must go back and ask. This
+   does not book anything by itself: it puts the details in front of them to
+   check. Tell them to confirm, and that the appointment is booked once they
+   do. Never claim it is booked before that.
 6. If `propose_booking` refuses a slot, read why and offer the alternatives it
    gives you, or ask them to pick a different time.
 
@@ -851,13 +868,13 @@ PUBLIC_APPOINTMENT_AGENT = AgentSpec(
                     "staff_id": string("Doctor id from list_doctors."),
                     "scheduled_at": string("Chosen start time as YYYY-MM-DDTHH:MM."),
                     "service_id": string(
-                        "Service id from list_services, if the visitor chose one. "
-                        "This sets how long the appointment is booked for."
+                        "Service id from list_services. Required — it sets how long the "
+                        "appointment is booked for. Ask the visitor to pick one first."
                     ),
                     "reason": string("The reason code from list_reasons, if one was chosen."),
                     "notes": string("Anything else the visitor wants the clinic to know. May be empty."),
                 },
-                ["first_name", "last_name", "staff_id", "scheduled_at"],
+                ["first_name", "last_name", "staff_id", "scheduled_at", "service_id"],
             ),
             fn=propose_booking,
             kind="proposal",

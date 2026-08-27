@@ -40,7 +40,11 @@ function pickerSteps(steps: any[] = []) {
   for (const s of steps) byAction[s.action] = s; // later ones overwrite earlier
   return {
     reasons: byAction["list_reasons"]?.output?.reasons,
-    services: byAction["list_services"]?.output?.services,
+    // `propose_booking` refused for a missing service carries the catalogue
+    // with it, so the reminder arrives with the same pickable cards rather
+    // than asking the visitor to type a service name they can't see.
+    services: byAction["list_services"]?.output?.services
+      ?? byAction["propose_booking"]?.output?.services,
     doctors: byAction["list_doctors"]?.output?.doctors,
     slots: byAction["list_available_slots"]?.output,
     earliest: byAction["find_earliest_slot"]?.output,
