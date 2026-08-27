@@ -86,6 +86,7 @@ function Rows({ n }: { n: number }) {
 export default function DashboardPage() {
   const [todayAppts, setTodayAppts] = useState<any[]>([]);
   const [runs, setRuns] = useState<any[]>([]);
+  const [runsLoading, setRunsLoading] = useState(true);
   const [requests, setRequests] = useState<any[]>([]);
   const [patientCount, setPatientCount] = useState(0);
   const [roles, setRoles] = useState<string[]>([]);
@@ -99,11 +100,8 @@ export default function DashboardPage() {
 
   useEffect(() => {
     const today = format(new Date(), "yyyy-MM-dd");
-    // Same login-scoping as the chat page: activity from a previous sitting is
-    // history, not "this session".
-    sessionStart().then(since => Promise.allSettled([
+    Promise.allSettled([
       appointmentsApi.list({ date_from: today, date_to: today, sort: "earliest" }),
-      agentApi.listRuns(since),
       // Still keyed on 'proposed' — unlike the Online Bookings tab on
       // /appointments, this is an action queue, and online bookings now
       // confirm themselves. It surfaces only rows submitted before that
@@ -111,9 +109,8 @@ export default function DashboardPage() {
       appointmentsApi.list({ source: "patient_portal", status: "proposed", sort: "earliest" }),
       patientsApi.list(),
       usersApi.me(),
-    ]).then(([appts, agentRuns, reqs, patients, me]) => {
+    ]).then(([appts, reqs, patients, me]) => {
       if (appts.status === "fulfilled") setTodayAppts(appts.value);
-      if (agentRuns.status === "fulfilled") setRuns(agentRuns.value);
       if (reqs.status === "fulfilled") setRequests(reqs.value);
       if (patients.status === "fulfilled") setPatientCount(patients.value.length);
       if (me.status === "fulfilled") {
@@ -121,7 +118,24 @@ export default function DashboardPage() {
         setName(me.value.full_name || me.value.email);
       }
       setLoading(false);
-    }));
+
+      // `/agent/runs` is admin+receptionist-only, matching who may run the
+      // agent at all. Asking for it as a doctor 403s, and a swallowed 403
+      // renders as "No agent runs yet" — a card that can only ever look empty.
+      // The card is hidden for those roles, so don't make the request either.
+      const roles = me.status === "fulfilled" ? me.value.roles : [];
+      if (!roles.some((r: string) => r === "admin" || r === "receptionist")) {
+        setRunsLoading(false);
+        return;
+      }
+      // Same login-scoping as the chat page: activity from a previous sitting
+      // is history, not "this session".
+      sessionStart()
+        .then(since => agentApi.listRuns(since))
+        .then(setRuns)
+        .catch(() => { /* an empty activity card is a fine fallback */ })
+        .finally(() => setRunsLoading(false));
+    });
   }, []);
 
   const confirmed = todayAppts.filter(a => a.status === "confirmed").length;
@@ -222,7 +236,7 @@ export default function DashboardPage() {
           />
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className={`grid grid-cols-1 gap-6 ${canManage ? "lg:grid-cols-2" : ""}`}>
           {/* Today's schedule */}
           <Card
             title="Today's Schedule"
@@ -281,24 +295,23 @@ export default function DashboardPage() {
             )}
           </Card>
 
-          {/* Agent activity */}
+          {/* Agent activity — only for the roles that may run the agent. */}
+          {canManage && (
           <Card
             title="Agent Activity This Session"
             action={
-              canManage && (
-                <Link href="/agent-chat" className="text-xs font-medium text-primary-600 hover:underline">
-                  Open chat
-                </Link>
-              )
+              <Link href="/agent-chat" className="text-xs font-medium text-primary-600 hover:underline">
+                Open chat
+              </Link>
             }
           >
-            {loading ? (
+            {runsLoading ? (
               <Rows n={4} />
             ) : runs.length === 0 ? (
               <Empty
                 icon="🤖"
                 text="No agent runs yet"
-                cta={canManage && (
+                cta={(
                   <Link href="/agent-chat" className="text-xs font-medium text-primary-600 hover:underline">
                     Try the Agent Chat
                   </Link>
@@ -326,6 +339,7 @@ export default function DashboardPage() {
               </div>
             )}
           </Card>
+          )}
         </div>
       </div>
     </AppLayout>
