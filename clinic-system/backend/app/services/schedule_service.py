@@ -15,6 +15,9 @@ from app.core.config import settings
 from app.core.database import get_db, execute_with_retry
 
 SLOT_STEP_MINUTES = 30
+# How far ahead of "now" a slot has to start before it is still worth offering
+# to someone booking themselves in.
+MIN_BOOKING_LEAD_MINUTES = 15
 # Widest window we look back for an appointment that could still be running
 # when a new one starts.
 MAX_APPOINTMENT_HOURS = 12
@@ -35,6 +38,37 @@ def to_clinic(dt: datetime) -> datetime:
 def clinic_today() -> date:
     """Today as the clinic reckons it — server UTC can already be tomorrow."""
     return datetime.now(clinic_tz()).date()
+
+
+def clinic_now() -> datetime:
+    """The clinic's current wall-clock instant."""
+    return datetime.now(clinic_tz())
+
+
+def earliest_bookable_instant() -> datetime:
+    """The first moment a self-service booking may still start.
+
+    A slot that has not started yet is technically bookable, but offering
+    10:00 at 09:58 wastes the visitor's time — they still have to get here.
+    """
+    return clinic_now() + timedelta(minutes=MIN_BOOKING_LEAD_MINUTES)
+
+
+def drop_past_slots(slots: List[str]) -> List[str]:
+    """`get_available_slots` output, minus the slots that have already gone.
+
+    `get_available_slots` answers "does this doctor work this slot?", which is
+    a property of the schedule and stays true for a morning that has already
+    happened — that is what the staff-side form wants when a receptionist
+    records a walk-in from earlier today. "Can this visitor still book it?" is
+    a different question, so the surfaces that serve visitors filter here
+    rather than the shared generator changing meaning underneath them.
+
+    Slot strings carry an offset, so `fromisoformat` yields an aware datetime
+    and the comparison is between instants, never between spellings.
+    """
+    cutoff = earliest_bookable_instant()
+    return [s for s in slots if datetime.fromisoformat(s) >= cutoff]
 
 
 _RELATIVE_DAYS = {"today": 0, "tomorrow": 1, "day after tomorrow": 2}

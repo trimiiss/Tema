@@ -14,16 +14,21 @@ matches-function, and shared-rules coverage for free):
   model choosing not to answer.
 """
 import pytest
+from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from postgrest.exceptions import APIError
 
-from app.agents.appointment_agent import PUBLIC_APPOINTMENT_AGENT, propose_booking
+from app.agents.appointment_agent import (
+    PUBLIC_APPOINTMENT_AGENT, propose_booking, tool_find_earliest_slot,
+    tool_list_available_slots, tool_specialty_for_reason,
+)
 from app.agents.runtime import _prior_turns, assert_no_write_tools, run_agent_loop
 from app.services import triage
 from app.services.patient_matching import match_or_create_patient
+from app.services.schedule_service import clinic_now, clinic_today, drop_past_slots
 from tests.conftest import make_chain, patch_db, table_chain
 from tests.test_agent_autonomy import calls, fed_back, says, scripted, tool_call
 
@@ -32,10 +37,26 @@ STAFF = {"id": "s-1", "full_name": "Dr. Arben Hoxha", "specialty": "General Prac
 # asserts the duration proves it came from this row rather than coinciding.
 SERVICE = {"id": "svc-1", "name": "Document Verification",
            "duration_minutes": 15, "description": "Administrative document review"}
-# 2026-08-03 is a Monday; 2026-08-02 a Sunday. No `schedules` rows means the
+# A Monday and a Sunday, both still ahead of us. No `schedules` rows means the
 # clinic default (Mon–Fri 09:00–17:00) applies, so the real slot logic runs.
-MONDAY_10 = "2026-08-03T10:00"
-SUNDAY_10 = "2026-08-02T10:00"
+#
+# These are derived from today rather than written down as literal dates
+# because `propose_booking` now refuses a time that has already passed: a fixed
+# date is a fine fixture right up until it goes past, and then every booking
+# test in this file starts failing for a reason that has nothing to do with
+# what it is testing.
+
+
+def _next_weekday(weekday: int):
+    """The next `weekday` (0 = Monday) strictly after today, clinic-side."""
+    today = clinic_today()
+    return today + timedelta(days=((weekday - today.weekday()) % 7) or 7)
+
+
+MONDAY = _next_weekday(0)
+SUNDAY = _next_weekday(6)
+MONDAY_10 = f"{MONDAY.isoformat()}T10:00"
+SUNDAY_10 = f"{SUNDAY.isoformat()}T10:00"
 
 
 @pytest.fixture
@@ -168,6 +189,19 @@ def test_specialty_for_unknown_reason_falls_back_too():
         assert triage.specialty_for("something_the_model_made_up") == "General Practice"
 
 
+def test_find_specialty_for_reason_hands_back_the_doctors_too(clinic_db):
+    """The doctors travel with the specialty.
+
+    Left to look them up in a second call, a model often skips it and asks "do
+    you have a preferred doctor?" — a question the visitor cannot answer,
+    because no names have ever been put in front of them.
+    """
+    with patch("app.services.triage.active_specialties", return_value=["General Practice"]):
+        result = tool_specialty_for_reason("general_checkup")
+    assert result["specialty"] == "General Practice"
+    assert result["doctors"] == [STAFF]
+
+
 # ---------------------------------------------------------- propose_booking
 
 def test_propose_booking_requires_a_contact_method(clinic_db):
@@ -205,7 +239,7 @@ def test_propose_booking_proposes_a_workable_slot_without_touching_patients(clin
     # The card the visitor confirms is written from the rows just read, not
     # from anything the model supplied.
     assert "Dr. Arben Hoxha" in result["description"]
-    assert "2026-08-03 10:00" in result["description"]
+    assert f"{MONDAY.isoformat()} 10:00" in result["description"]
     # Never touches `patients` — matching/creation happens only after the
     # visitor confirms, in `public_orchestrator.resume_public_booking`.
     assert clinic_db.table("patients").insert.call_count == 0
@@ -278,6 +312,73 @@ def test_the_service_is_checked_before_anything_else_is_asked_for(clinic_db):
                              scheduled_at=SUNDAY_10)
     assert result["proposed"] is False
     assert "remind the visitor to pick one" in result["error"]
+
+
+# ------------------------------------------------- nothing in the past
+#
+# A slot list is generated from the doctor's schedule, which says just as much
+# about this morning as about tomorrow morning — so at four in the afternoon the
+# booking agent would happily announce "the earliest available is today at
+# 09:00" and put a confirmation card in front of the visitor for an appointment
+# that had already been and gone. Staff asking what hours a doctor works still
+# want the unfiltered answer, so the filtering lives on the visitor-facing
+# surfaces (`drop_past_slots`) rather than inside `get_available_slots`.
+
+
+def test_drop_past_slots_keeps_only_what_is_still_bookable():
+    now = clinic_now()
+    gone = (now - timedelta(hours=1)).isoformat()
+    later = (now + timedelta(hours=2)).isoformat()
+    assert drop_past_slots([gone, later]) == [later]
+
+
+def test_propose_booking_refuses_a_time_that_has_already_passed(clinic_db):
+    """Yesterday is a slot the doctor works, and it is still not bookable."""
+    yesterday = clinic_today() - timedelta(days=1)
+    result = propose_booking(first_name="Arta", last_name="Berisha", staff_id="s-1",
+                             scheduled_at=f"{yesterday.isoformat()}T10:00",
+                             phone="044111222", service_id="svc-1")
+    assert result["proposed"] is False
+    assert "in the past" in result["error"]
+    # And the refusal carries real alternatives, so the agent offers those
+    # instead of asking the visitor to guess another time.
+    assert result["options"]
+    assert all(datetime.fromisoformat(o["slot"]) > clinic_now() for o in result["options"])
+
+
+def test_listing_slots_for_a_day_that_has_passed_is_refused(clinic_db):
+    yesterday = (clinic_today() - timedelta(days=1)).isoformat()
+    result = tool_list_available_slots("s-1", yesterday)
+    assert result["slots"] == []
+    assert "has already passed" in result["error"]
+
+
+def test_todays_slots_never_include_an_hour_that_has_gone(clinic_db):
+    result = tool_list_available_slots("s-1", clinic_today().isoformat())
+    assert all(datetime.fromisoformat(s) > clinic_now() for s in result["slots"])
+
+
+def test_find_earliest_slot_offers_a_choice_of_upcoming_times(clinic_db):
+    """One earliest slot is a take-it-or-leave-it offer the visitor has to type
+    a counter-offer to; a handful of real openings is answered with one tap."""
+    result = tool_find_earliest_slot("General Practice")
+    assert result["found"] is True
+    assert len(result["options"]) > 1
+    # The headline slot is still the earliest of them, so anything reading the
+    # single-slot shape keeps working.
+    assert result["slot"] == result["options"][0]["slot"]
+    assert result["options"] == sorted(
+        result["options"], key=lambda o: datetime.fromisoformat(o["slot"]))
+    assert all(datetime.fromisoformat(o["slot"]) > clinic_now() for o in result["options"])
+
+
+def test_find_earliest_slot_ignores_a_start_date_already_behind_us(clinic_db):
+    """A model that passes last month as `from_date` gets today's answer, not a
+    fortnight of dates nobody can book."""
+    last_month = (clinic_today() - timedelta(days=30)).isoformat()
+    result = tool_find_earliest_slot("General Practice", from_date=last_month)
+    assert result["found"] is True
+    assert all(datetime.fromisoformat(o["slot"]) > clinic_now() for o in result["options"])
 
 
 def test_propose_booking_refuses_an_unknown_doctor(clinic_db):

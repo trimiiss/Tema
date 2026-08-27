@@ -34,7 +34,7 @@ from app.models.schemas import (
     PublicDoctorOut, PublicReasonOut, PublicServiceOut, PublicSlotsOut,
 )
 from app.services import triage
-from app.services.schedule_service import get_available_slots, parse_when
+from app.services.schedule_service import drop_past_slots, get_available_slots, parse_when
 
 router = APIRouter(prefix="/public", tags=["public"])
 
@@ -80,12 +80,19 @@ def list_services():
 @router.get("/slots", response_model=PublicSlotsOut)
 def slots(staff_id: str, date: str, duration_min: int = 30):
     """Deterministic fallback slot picker for the UI's own doctor/day pickers,
-    independent of anything the chat has said this turn."""
+    independent of anything the chat has said this turn.
+
+    Past slots are filtered out here rather than in `get_available_slots`: this
+    is a visitor asking what they can still book, not staff asking what hours a
+    doctor works, and the two questions have different answers about a morning
+    that is already over.
+    """
     try:
         dt = parse_when(date)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
-    return {"staff_id": staff_id, "date": date, "slots": get_available_slots(staff_id, dt, duration_min)}
+    slots = drop_past_slots(get_available_slots(staff_id, dt, duration_min))
+    return {"staff_id": staff_id, "date": date, "slots": slots}
 
 
 # ---- Booking chat — session-scoped ----

@@ -13,14 +13,19 @@ import type { Contact } from "@/lib/publicApi";
 // sends them with the confirmation so the *patient record* is written from
 // this form rather than from the model's transcription of the sentence. What
 // the visitor typed here is what a receptionist ends up reading.
+// `open` is the parent's state rather than this component's, so picking a time
+// can open the form: contact details are the one thing in this conversation a
+// visitor genuinely has to type, and a collapsed link at the bottom of the page
+// is easy to miss when the agent asks for them.
 export default function ContactForm({
-  onSend, onContact, disabled,
+  open, setOpen, onSend, onContact, disabled,
 }: {
+  open: boolean;
+  setOpen: (open: boolean) => void;
   onSend: (text: string) => void;
   onContact: (contact: Contact) => void;
   disabled: boolean;
 }) {
-  const [open, setOpen] = useState(false);
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
   const [phone, setPhone] = useState("");

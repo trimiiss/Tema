@@ -86,15 +86,32 @@ function formatSlot(iso: string): string {
   }
 }
 
+/** Drop slots that have already started.
+ *
+ * The tools behind these cards already filter the past out server-side, but a
+ * turn stays on screen after it was answered — a conversation left open over
+ * lunch would otherwise still be offering this morning's buttons, and tapping
+ * one only earns a refusal. Compared as instants (`getTime`), never as
+ * strings: the same moment has several valid spellings. An unparseable value
+ * is left alone rather than silently dropped. */
+function stillOpen(slots: string[]): string[] {
+  const now = Date.now();
+  return (slots ?? []).filter(s => {
+    const t = new Date(s).getTime();
+    return Number.isNaN(t) || t > now;
+  });
+}
+
 export function SlotPicker({
   slots, doctorName, onPick,
 }: { slots: string[]; doctorName?: string; onPick: (text: string) => void }) {
-  if (!slots?.length) {
-    return <p className="text-xs text-gray-400 mt-2">No open slots there — try another day or doctor.</p>;
+  const open = stillOpen(slots);
+  if (!open.length) {
+    return <p className="text-xs text-gray-400 mt-2">No open slots left there — try another day or doctor.</p>;
   }
   return (
     <div className="flex flex-wrap gap-2 mt-2">
-      {slots.map(s => (
+      {open.map(s => (
         <button
           key={s}
           onClick={() => onPick(
@@ -103,6 +120,36 @@ export function SlotPicker({
           className="px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs font-medium text-gray-700 hover:border-primary-400 hover:bg-primary-50 transition"
         >
           {formatSlot(s)}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** The soonest openings across several doctors — `find_earliest_slot`'s own
+ * `options`, and the same list a refused `propose_booking` hands back.
+ *
+ * One earliest slot on its own is a take-it-or-leave-it offer: a visitor who
+ * can't make it has to type a counter-offer and wait for the agent to go
+ * looking again. A handful of real openings, each labelled with the doctor who
+ * has it, is answered with one tap. */
+export function SlotOptionPicker({
+  options, onPick,
+}: { options: any[]; onPick: (text: string) => void }) {
+  const open = (options ?? []).filter(o => stillOpen([o.slot]).length);
+  if (!open.length) {
+    return <p className="text-xs text-gray-400 mt-2">Those times have gone — ask for the next opening.</p>;
+  }
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2">
+      {open.map(o => (
+        <button
+          key={`${o.staff_id}-${o.slot}`}
+          onClick={() => onPick(`I'll take ${formatSlot(o.slot)} with ${o.staff_name}.`)}
+          className="text-left px-3 py-2.5 bg-white border border-gray-200 rounded-xl hover:border-primary-400 hover:bg-primary-50 transition"
+        >
+          <span className="block text-sm font-medium text-gray-800">{formatSlot(o.slot)}</span>
+          <span className="block text-xs text-gray-500">{o.staff_name}</span>
         </button>
       ))}
     </div>

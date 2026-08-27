@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import toast from "react-hot-toast";
 import { publicBookingApi, newSessionId, type Contact } from "@/lib/publicApi";
-import { ReasonPicker, ServicePicker, DoctorPicker, SlotPicker, ConfirmationCard } from "./BookingCards";
+import { ReasonPicker, ServicePicker, DoctorPicker, SlotPicker, SlotOptionPicker, ConfirmationCard } from "./BookingCards";
 import ContactForm from "./ContactForm";
 
 // `run` is set only on messages rebuilt from history — see agent-chat's
@@ -38,6 +38,7 @@ function Typing() {
 function pickerSteps(steps: any[] = []) {
   const byAction: Record<string, any> = {};
   for (const s of steps) byAction[s.action] = s; // later ones overwrite earlier
+  const earliest = byAction["find_earliest_slot"]?.output;
   return {
     reasons: byAction["list_reasons"]?.output?.reasons,
     // `propose_booking` refused for a missing service carries the catalogue
@@ -45,20 +46,35 @@ function pickerSteps(steps: any[] = []) {
     // than asking the visitor to type a service name they can't see.
     services: byAction["list_services"]?.output?.services
       ?? byAction["propose_booking"]?.output?.services,
-    doctors: byAction["list_doctors"]?.output?.doctors,
+    // `find_specialty_for_reason` returns the doctors alongside the specialty,
+    // so the visitor gets pickable names even on the turn where the agent only
+    // worked out which specialty they need.
+    doctors: byAction["list_doctors"]?.output?.doctors
+      ?? byAction["find_specialty_for_reason"]?.output?.doctors,
     slots: byAction["list_available_slots"]?.output,
-    earliest: byAction["find_earliest_slot"]?.output,
+    // `find_earliest_slot` offers several openings now, so the visitor picks
+    // rather than accepting or re-typing. A run restored from history may
+    // carry only the single earliest one, so fall back to that shape.
+    earliestOptions: earliest?.options
+      ?? (earliest?.found
+        ? [{ staff_id: earliest.staff_id, staff_name: earliest.staff_name, slot: earliest.slot }]
+        : []),
+    // A booking refused because the time had already passed hands back the
+    // same shape, so the apology arrives with real alternatives attached.
+    refusedOptions: byAction["propose_booking"]?.output?.options ?? [],
   };
 }
 
 function BookingRunDetail({
-  runId, initialRun, doctorNames, contact, onDoctorsSeen, onSend,
+  runId, initialRun, doctorNames, contact, isLast, onDoctorsSeen, onSend, onPickSlot,
 }: {
   runId: string; initialRun?: any;
   doctorNames: Record<string, string>;
   contact?: Contact;
+  isLast: boolean;
   onDoctorsSeen: (names: Record<string, string>) => void;
   onSend: (text: string) => void;
+  onPickSlot: (text: string) => void;
 }) {
   const [run, setRun] = useState<any>(initialRun ?? null);
   const [deciding, setDeciding] = useState(false);
@@ -94,9 +110,11 @@ function BookingRunDetail({
   // picker (which only knows a staff_id) can label its buttons with a name.
   useEffect(() => {
     const names: Record<string, string> = {};
-    for (const d of run?.steps ? pickerSteps(run.steps).doctors ?? [] : []) names[d.id] = d.full_name;
-    const earliest = run?.steps ? pickerSteps(run.steps).earliest : null;
-    if (earliest?.found) names[earliest.staff_id] = earliest.staff_name;
+    const picked = run?.steps ? pickerSteps(run.steps) : null;
+    for (const d of picked?.doctors ?? []) names[d.id] = d.full_name;
+    for (const o of [...(picked?.earliestOptions ?? []), ...(picked?.refusedOptions ?? [])]) {
+      if (o?.staff_id) names[o.staff_id] = o.staff_name;
+    }
     if (Object.keys(names).length) onDoctorsSeen(names);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [run?.steps]);
@@ -119,7 +137,17 @@ function BookingRunDetail({
 
   const pending = run.gates?.find((g: any) => g.status === "pending");
   const decided = run.gates?.filter((g: any) => g.status !== "pending") ?? [];
-  const { reasons, services, doctors, slots, earliest } = pickerSteps(run.steps);
+  const { reasons, services, doctors, slots, earliestOptions, refusedOptions } = pickerSteps(run.steps);
+
+  // Pickers belong to the turn the visitor is answering right now — the latest
+  // one, and only until it has moved to a confirmation card. They used to be
+  // hidden as soon as `run.result` arrived, which is the exact moment the
+  // agent finishes asking its question: the buttons flashed past while the
+  // answer streamed and were gone by the time there was anything to answer,
+  // so the visitor had to type a doctor's name or a time by hand. An earlier
+  // turn in the scrollback keeps its text but loses its buttons, so a resolved
+  // turn still does not invite re-picking.
+  const showPickers = isLast && !pending && !(run.gates?.length > 0);
 
   return (
     <div className="space-y-2">
@@ -127,20 +155,22 @@ function BookingRunDetail({
       {run.result?.message && <p className="whitespace-pre-wrap">{run.result.message}</p>}
 
       {/* Interactive pickers, built straight from the agent's own tool
-          results — never shown once the request has moved to a confirmation
-          or is already finished, so a resolved turn doesn't invite re-picking. */}
-      {!pending && !run.result && reasons && <ReasonPicker reasons={reasons} onPick={onSend} />}
+          results — see `showPickers` for when they stay on screen. */}
+      {showPickers && reasons && <ReasonPicker reasons={reasons} onPick={onSend} />}
       {/* The opening screen offers these too, but the agent calls
           `list_services` mid-conversation whenever the visitor hasn't settled
           on one — without this the visitor is asked to choose from a list only
           the model can see, and has to type the name back exactly. */}
-      {!pending && !run.result && services && <ServicePicker services={services} onPick={onSend} />}
-      {!pending && !run.result && doctors && <DoctorPicker doctors={doctors} onPick={onSend} />}
-      {!pending && !run.result && slots?.slots && (
-        <SlotPicker slots={slots.slots} doctorName={doctorNames[slots.staff_id]} onPick={onSend} />
+      {showPickers && services && <ServicePicker services={services} onPick={onSend} />}
+      {showPickers && doctors && <DoctorPicker doctors={doctors} onPick={onSend} />}
+      {showPickers && slots?.slots && (
+        <SlotPicker slots={slots.slots} doctorName={doctorNames[slots.staff_id]} onPick={onPickSlot} />
       )}
-      {!pending && !run.result && earliest?.found && (
-        <SlotPicker slots={[earliest.slot]} doctorName={earliest.staff_name} onPick={onSend} />
+      {showPickers && earliestOptions.length > 0 && (
+        <SlotOptionPicker options={earliestOptions} onPick={onPickSlot} />
+      )}
+      {showPickers && refusedOptions.length > 0 && (
+        <SlotOptionPicker options={refusedOptions} onPick={onPickSlot} />
       )}
 
       {pending && <ConfirmationCard gate={pending} contact={contact} onDecide={decide} deciding={deciding} />}
@@ -159,6 +189,9 @@ export default function BookingChat() {
   // What the visitor typed into the contact form, kept verbatim so it can be
   // sent with the confirmation instead of the model's version of it.
   const [contact, setContact] = useState<Contact | undefined>();
+  // Whether the contact form is expanded. Lifted out of `ContactForm` so that
+  // picking a time can open it — see `pickSlot`.
+  const [contactOpen, setContactOpen] = useState(false);
   // Bumped by "New chat" purely to remount `ContactForm`, which keeps the
   // typed name and phone in its own state and would otherwise carry the last
   // visitor's details into the new conversation.
@@ -203,7 +236,16 @@ export default function BookingChat() {
     setInput("");
     setDoctorNames({});
     setContact(undefined);
+    setContactOpen(false);
     setChatKey(k => k + 1);
+  }
+
+  /** Tapping a time is the point where the clinic needs to know who is
+   * booking, so the contact form opens with it rather than waiting to be
+   * found at the bottom of the page. */
+  function pickSlot(text: string) {
+    setContactOpen(true);
+    send(text);
   }
 
   async function send(text?: string) {
@@ -263,8 +305,10 @@ export default function BookingChat() {
                       runId={m.runId} initialRun={m.run}
                       doctorNames={doctorNames}
                       contact={contact}
+                      isLast={i === messages.length - 1}
                       onDoctorsSeen={mergeDoctorNames}
                       onSend={send}
+                      onPickSlot={pickSlot}
                     />
                   : m.text
               )}
@@ -275,7 +319,8 @@ export default function BookingChat() {
       </div>
 
       <div className="border-t border-gray-200 pt-3 space-y-2">
-        <ContactForm key={chatKey} onSend={send} onContact={setContact} disabled={sending} />
+        <ContactForm key={chatKey} open={contactOpen} setOpen={setContactOpen}
+          onSend={send} onContact={setContact} disabled={sending} />
         <div className="flex gap-3">
           <input
             value={input}

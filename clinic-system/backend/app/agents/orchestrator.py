@@ -40,7 +40,7 @@ from app.core.config import settings
 from app.core.database import get_db, execute_with_retry
 from app.core.audit import log_action
 from app.core.events import publish
-from app.services.schedule_service import clinic_today, parse_clinic_datetime  # noqa: F401 (re-exported)
+from app.services.schedule_service import clinic_now, clinic_today, parse_clinic_datetime  # noqa: F401 (re-exported)
 
 _oai: AsyncOpenAI | None = None
 
@@ -351,8 +351,12 @@ async def _run_agent(state: OrchestratorState, agent_name: str) -> OrchestratorS
     def on_step(agent: str, action: str, inp: Any, out: Any) -> None:
         _log_step(run_id, agent, action, inp, out)
 
+    # The clock as well as the calendar: an agent told only the date will offer
+    # this morning's slots in the afternoon, and read "today at 9" as bookable.
+    now = clinic_now()
     context = (
-        f"Today is {clinic_today().isoformat()}. "
+        f"Today is {now.strftime('%A %d %B %Y')} and the time at the clinic is now "
+        f"{now.strftime('%H:%M')}. "
         f"The user's original request was: {state['input_text']!r}."
     )
     try:

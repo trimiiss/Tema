@@ -47,7 +47,8 @@ from app.agents.runtime import (
 )
 from app.services import triage
 from app.services.schedule_service import (
-    check_conflict, clinic_today, get_available_slots, parse_when, to_clinic,
+    check_conflict, clinic_now, clinic_today, drop_past_slots,
+    earliest_bookable_instant, get_available_slots, parse_when, to_clinic,
 )
 
 
@@ -541,6 +542,10 @@ APPOINTMENT_AGENT = AgentSpec(
 _PUBLIC_STAFF_COLUMNS = "id,full_name,specialty,bio"
 MAX_LOOKAHEAD_DAYS = 14
 DEFAULT_DURATION_MIN = 30
+# How many times to put in front of a visitor at once: enough to be a choice,
+# few enough to read as a row of buttons rather than a timetable.
+MAX_SLOT_OPTIONS = 6
+MAX_SLOTS_PER_DOCTOR_PER_DAY = 2
 
 
 def tool_list_reasons() -> Dict[str, Any]:
@@ -568,24 +573,100 @@ def tool_list_doctors(specialty: str) -> Dict[str, Any]:
 
 
 def tool_specialty_for_reason(reason: str) -> Dict[str, Any]:
-    """Map a reason code from `list_reasons` to a specialty that has an active doctor."""
-    return {"reason": reason, "specialty": triage.specialty_for(reason)}
+    """Map a reason code from `list_reasons` to a specialty that has an active doctor.
+
+    The doctors come back with it. Left to look them up in a second call, a
+    model often skips it and asks "do you have a preferred doctor?" instead —
+    a question the visitor cannot answer, because the names have never been in
+    front of them. Returning the list makes the answer to that question part
+    of the same result, and the booking page renders it as pickable cards.
+    """
+    specialty = triage.specialty_for(reason)
+    # `specialty` last: `tool_list_doctors` reports back whatever it filtered
+    # on, and the routed specialty is the answer to the question asked here.
+    return {"reason": reason, **tool_list_doctors(specialty), "specialty": specialty}
 
 
 def tool_list_available_slots(staff_id: str, date: str) -> Dict[str, Any]:
+    """Open start times for one doctor on one day — future ones only.
+
+    A visitor cannot walk into this morning, so a day that has already been
+    and gone comes back as a refusal, and today comes back with the hours that
+    have already passed removed (`drop_past_slots`). Without this the model
+    reads 09:00 off a schedule at four in the afternoon and offers it, which
+    is exactly the slot the validator would then refuse.
+    """
     try:
         dt = parse_when(date)
     except ValueError as exc:
         return {"error": f"Could not read '{date}' as a date: {exc}"}
-    slots = get_available_slots(staff_id, dt, DEFAULT_DURATION_MIN)
-    return {"staff_id": staff_id, "date": date, "slots": slots[:10]}
+
+    if dt.date() < clinic_today():
+        return {
+            "staff_id": staff_id, "date": date, "slots": [],
+            "error": (
+                f"{dt.date().isoformat()} has already passed — today is "
+                f"{clinic_today().isoformat()}. Ask for a day from today onwards."
+            ),
+        }
+
+    slots = drop_past_slots(get_available_slots(staff_id, dt, DEFAULT_DURATION_MIN))
+    out: Dict[str, Any] = {"staff_id": staff_id, "date": date, "slots": slots[:10]}
+    if not slots:
+        out["note"] = (
+            "Nothing left open on that day. Call `find_earliest_slot` and offer "
+            "the next openings instead of asking the visitor to guess a day."
+        )
+    return out
+
+
+def _upcoming_options(doctors: list, start_day, limit: int = MAX_SLOT_OPTIONS,
+                      per_doctor_per_day: int = MAX_SLOTS_PER_DOCTOR_PER_DAY,
+                      duration_min: int = DEFAULT_DURATION_MIN) -> list:
+    """The next `limit` bookable slots across `doctors`, earliest first.
+
+    Scans forward day by day from `start_day` and stops as soon as it has
+    enough — a doctor with a wide-open fortnight would otherwise fill the list
+    from one morning, and the visitor would be choosing between six times with
+    the same doctor rather than between the clinic's soonest openings.
+    """
+    options: list = []
+    for offset in range(MAX_LOOKAHEAD_DAYS):
+        day = start_day + timedelta(days=offset)
+        day_dt = datetime.combine(day, datetime.min.time())
+        for doc in doctors:
+            slots = drop_past_slots(get_available_slots(doc["id"], day_dt, duration_min))
+            for slot in slots[:per_doctor_per_day]:
+                options.append({
+                    "staff_id": doc["id"],
+                    "staff_name": doc["full_name"],
+                    "date": day.isoformat(),
+                    "slot": slot,
+                })
+        if len(options) >= limit:
+            break
+    # Sorted as instants, not as strings: a fortnight can straddle the DST
+    # change, and "…T09:00+01:00" sorts after "…T09:00+02:00" while being an
+    # hour later in real time.
+    options.sort(key=lambda o: datetime.fromisoformat(o["slot"]))
+    return options[:limit]
 
 
 def tool_find_earliest_slot(specialty: str, from_date: str = "") -> Dict[str, Any]:
-    """The soonest open slot with any active doctor in `specialty`, scanning ahead.
+    """The soonest open slots with the active doctors in `specialty`.
 
     Powers "what's the earliest you have" without the model having to call
     `list_available_slots` once per doctor per day itself.
+
+    Returns a handful of `options`, not just the single earliest one: a visitor
+    handed one take-it-or-leave-it time has to type a counter-offer, while a
+    short list of real openings is something the booking page renders as
+    buttons they can tap. `slot`/`staff_id`/`staff_name` still describe the
+    earliest of them, so anything reading the first option keeps working.
+
+    Every option is in the future — a slot earlier today is gone
+    (`drop_past_slots`), and a `from_date` already behind us is clamped to
+    today rather than scanned.
     """
     doctors = tool_list_doctors(specialty)["doctors"]
     if not doctors:
@@ -595,21 +676,21 @@ def tool_find_earliest_slot(specialty: str, from_date: str = "") -> Dict[str, An
         start_day = parse_when(from_date).date() if from_date else clinic_today()
     except ValueError as exc:
         return {"found": False, "error": f"Could not read '{from_date}' as a date: {exc}"}
+    start_day = max(start_day, clinic_today())
 
-    for offset in range(MAX_LOOKAHEAD_DAYS):
-        day = start_day + timedelta(days=offset)
-        day_dt = datetime.combine(day, datetime.min.time())
-        for doc in doctors:
-            slots = get_available_slots(doc["id"], day_dt, DEFAULT_DURATION_MIN)
-            if slots:
-                return {
-                    "found": True,
-                    "staff_id": doc["id"],
-                    "staff_name": doc["full_name"],
-                    "date": day.isoformat(),
-                    "slot": slots[0],
-                }
-    return {"found": False, "error": f"Nothing open in the next {MAX_LOOKAHEAD_DAYS} days."}
+    options = _upcoming_options(doctors, start_day)
+    if not options:
+        return {"found": False, "error": f"Nothing open in the next {MAX_LOOKAHEAD_DAYS} days."}
+
+    first = options[0]
+    return {
+        "found": True,
+        "staff_id": first["staff_id"],
+        "staff_name": first["staff_name"],
+        "date": first["date"],
+        "slot": first["slot"],
+        "options": options,
+    }
 
 
 _SERVICE_COLUMNS = "id,name,duration_minutes,description"
@@ -715,6 +796,26 @@ def propose_booking(
     except ValueError as exc:
         return {"proposed": False, "error": f"Could not read '{scheduled_at}' as a date and time: {exc}"}
 
+    # A time that has already been and gone. The schedule still says the doctor
+    # works 09:00 on a Monday morning that is now over, so `_slot_is_workable`
+    # would wave it through and the visitor would be handed a confirmation card
+    # for an appointment they cannot attend. The refusal carries this doctor's
+    # real next openings, so the model offers those instead of asking the
+    # visitor to guess another time — and the booking page renders them as
+    # buttons, the same way it renders `find_earliest_slot`'s options.
+    now = clinic_now()
+    if to_clinic(when) < earliest_bookable_instant():
+        return {
+            "proposed": False,
+            "error": (
+                f"{to_clinic(when).strftime('%d %b at %H:%M')} is in the past — it is now "
+                f"{now.strftime('%d %b, %H:%M')}. Offer the visitor one of the times below instead."
+            ),
+            "staff_id": staff["id"],
+            "staff_name": staff["full_name"],
+            "options": _upcoming_options([staff], clinic_today(), duration_min=duration),
+        }
+
     # Reuses the staff agent's `_slot_is_workable` — same conflict + working-hours
     # check either way, just with no `exclude_appointment_id` (this always books
     # a new appointment, never moves an existing one).
@@ -763,12 +864,16 @@ How to work, in order:
    offer `list_reasons` to narrow it down and then come back and confirm which
    service that means — every booking needs one. Never ask them to describe
    symptoms or what is wrong with them.
-2. Work out who should see them: `find_specialty_for_reason` maps a reason to a
-   specialty, then `list_doctors` shows who is available. If they already know
-   which doctor they want, that is fine too — and `list_doctors` with an empty
-   specialty lists everyone.
-3. Find them a time: `list_available_slots` for a specific day they name, or
-   `find_earliest_slot` if they just want the soonest opening.
+2. Work out who should see them, and show them the actual doctors. Call
+   `find_specialty_for_reason` for the specialty, then `list_doctors` — with an
+   empty specialty it lists everyone. Name the doctors that came back, with
+   their specialty, as a short list to pick from. Never ask "do you have a
+   preferred doctor?" or "any specialty in mind?" without the list attached:
+   the visitor cannot see your tools, so an open question like that asks them
+   to guess at names they have never been shown.
+3. Find them a time the same way: `find_earliest_slot` for "the soonest you
+   have", or `list_available_slots` for a specific day they name. Offer the
+   times that came back as a few concrete choices and let them pick one.
 4. Once they have picked a doctor and a slot, collect their first name, last
    name, and a phone number or email (at least one contact method is
    required — say so if they give neither).
@@ -792,6 +897,14 @@ Rules specific to this surface:
   and, if relevant, remind them this is not the place for medical advice.
 - Never invent a doctor, a specialty, a time slot, or an id. Everything you
   reference must have come back from a tool in this conversation.
+- Offer choices, do not ask the visitor to compose an answer. Whenever a tool
+  has just returned services, doctors or slots, list them by name in your
+  reply — the booking page turns each one into a button they can tap, so a
+  reply that names them is a reply they can answer with one tap.
+- Never offer, repeat or confirm a time that has already passed. Today's date
+  and the current clinic time are given to you at the start of the task; the
+  earliest time you can offer is later today, and a slot from this morning is
+  gone. If a day has no openings left, say so and offer the next ones instead.
 """.strip()
 
 PUBLIC_APPOINTMENT_AGENT = AgentSpec(
@@ -807,7 +920,11 @@ PUBLIC_APPOINTMENT_AGENT = AgentSpec(
         ),
         ToolSpec(
             name="find_specialty_for_reason",
-            description="Map a reason code from list_reasons to the specialty that handles it.",
+            description=(
+                "Map a reason code from list_reasons to the specialty that handles it, "
+                "and the active doctors who work it. Show those doctors to the visitor "
+                "by name — the booking page renders them as cards they can pick."
+            ),
             parameters=obj({"reason": string("A reason code from list_reasons, e.g. 'general_checkup'.")}, ["reason"]),
             fn=tool_specialty_for_reason,
         ),
@@ -819,7 +936,10 @@ PUBLIC_APPOINTMENT_AGENT = AgentSpec(
         ),
         ToolSpec(
             name="list_available_slots",
-            description="Open start times for one doctor on one day.",
+            description=(
+                "Open start times for one doctor on one day, with any hour that has "
+                "already passed removed. The booking page renders them as buttons."
+            ),
             parameters=obj(
                 {
                     "staff_id": string("Doctor id from list_doctors."),
@@ -831,7 +951,11 @@ PUBLIC_APPOINTMENT_AGENT = AgentSpec(
         ),
         ToolSpec(
             name="find_earliest_slot",
-            description="The soonest open slot with any active doctor in a specialty. Use when the visitor just wants 'the soonest available'.",
+            description=(
+                "The soonest open slots with the active doctors in a specialty, as a short "
+                "list of options the visitor can pick from. Use when the visitor wants 'the "
+                "soonest available'. Never returns a time that has already passed."
+            ),
             parameters=obj(
                 {
                     "specialty": string("Specialty to search, e.g. 'General Practice'."),

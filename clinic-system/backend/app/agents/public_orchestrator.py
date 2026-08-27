@@ -35,7 +35,7 @@ from app.core.database import get_db, execute_with_retry
 from app.core.events import publish
 from app.services import triage
 from app.services.patient_matching import match_or_create_patient
-from app.services.schedule_service import clinic_today, to_clinic
+from app.services.schedule_service import clinic_now, to_clinic
 
 # How many earlier runs from this session to replay as conversation history.
 # Bounded for the same reason `runtime.MAX_TOOL_RESULT_CHARS` is bounded: an
@@ -152,8 +152,12 @@ def _facts_for_session(session_id: str, exclude_run_id: str) -> str:
             for doc in output.get("doctors") or []:
                 doctors[doc["id"]] = doc["full_name"]
         elif step.get("action") == "find_earliest_slot" and output.get("found"):
-            doctors[output["staff_id"]] = output["staff_name"]
-            slots.append(f"{output['staff_name']} at {output['slot']}")
+            # Every option, not only the earliest: the visitor is shown all of
+            # them as buttons, so any of them can be the one they come back and
+            # refer to — and an id that is not here is an id the model invents.
+            for option in output.get("options") or [output]:
+                doctors[option["staff_id"]] = option["staff_name"]
+                slots.append(f"{option['staff_name']} at {option['slot']}")
         elif step.get("action") == "list_available_slots":
             for slot in (output.get("slots") or [])[:5]:
                 name = doctors.get(output.get("staff_id"), output.get("staff_id"))
@@ -189,7 +193,15 @@ async def run_booking_agent(run_id: str, session_id: str, input_text: str) -> No
 
     try:
         history = _history_for_session(session_id, run_id)
-        context = f"Today is {clinic_today().isoformat()}."
+        # The time, not just the date. Given only "today is <date>", a model
+        # reads 09:00 off a slot list at four in the afternoon and offers it as
+        # "the earliest available" — the tools now filter those out, but the
+        # model still has to know why, and has to stop *talking* about them.
+        now = clinic_now()
+        context = (
+            f"Today is {now.strftime('%A %d %B %Y')} and the time at the clinic is now "
+            f"{now.strftime('%H:%M')}. Never offer or confirm a time earlier than that."
+        )
         facts = _facts_for_session(session_id, run_id)
         if facts:
             context = f"{context} {facts}"
