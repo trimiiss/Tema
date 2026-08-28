@@ -16,7 +16,7 @@ All commands below are run from `clinic-system/` unless noted.
 ```bash
 cd backend
 pip install -r requirements.txt
-pytest tests/ -v                        # full suite (177 tests)
+pytest tests/ -v                        # full suite (246 tests)
 pytest tests/test_appointments.py -v    # single file
 pytest tests/test_approval_gates.py -k test_gate_cannot_be_decided_twice -v  # single test
 ```

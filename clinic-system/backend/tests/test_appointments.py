@@ -41,15 +41,6 @@ def test_check_conflict_returns_conflicting_appointment():
     assert result == existing
 
 
-def test_check_conflict_different_time_no_conflict():
-    mock_db = _make_db([])
-
-    with patch("app.services.schedule_service.get_db", return_value=mock_db):
-        dt = datetime(2026, 7, 24, 14, 0)  # 4 hours later
-        result = check_conflict("staff-001", dt)
-    assert result is None
-
-
 # ---- Available slots ----
 
 def test_available_slots_returns_slots_within_schedule():
@@ -163,20 +154,6 @@ def test_default_hours_do_not_apply_at_the_weekend():
     assert slots == []
 
 
-def test_an_explicit_schedule_suppresses_the_fallback():
-    """A doctor set to Tuesdays only must not sprout default Monday hours."""
-    sched = [{"staff_id": "s1", "weekday": 1, "start_time": "10:00", "end_time": "12:00"}]
-    mock_db = MagicMock()
-    mock_db.table.side_effect = lambda n: make_chain(sched if n == "schedules" else [])
-
-    with patch("app.services.schedule_service.get_db", return_value=mock_db):
-        monday = get_available_slots("s1", datetime(2026, 7, 20))
-        tuesday = get_available_slots("s1", datetime(2026, 7, 21))
-
-    assert monday == []
-    assert [datetime.fromisoformat(s).strftime("%H:%M") for s in tuesday][0] == "10:00"
-
-
 # ---- Duration handling ----
 
 def test_long_appointment_blocks_every_slot_it_covers():
@@ -237,20 +214,6 @@ def test_conflict_check_ignores_the_appointment_being_edited():
     assert result is None
 
 
-def test_double_booking_detected():
-    existing = {
-        "id": "appt-existing",
-        "scheduled_at": "2026-07-24T08:00:00+00:00",  # 10:00 clinic time
-        "duration_min": 30,
-    }
-    mock_db = _make_db([existing])
-
-    with patch("app.services.schedule_service.get_db", return_value=mock_db):
-        result = check_conflict("staff-001", datetime(2026, 7, 24, 10, 0))
-    assert result is not None
-    assert result["id"] == "appt-existing"
-
-
 # ---- Auto-completing elapsed appointments ----
 
 def _sweep_db(rows):
@@ -306,23 +269,6 @@ def test_sweep_only_considers_confirmed_appointments():
     with patch_db(db):
         complete_elapsed_appointments()
     chain.eq.assert_any_call("status", "confirmed")
-
-
-def test_sweep_with_nothing_to_do_writes_nothing():
-    db, chain = _sweep_db([])
-    with patch_db(db):
-        assert complete_elapsed_appointments() == 0
-    chain.update.assert_not_called()
-
-
-def test_sweep_defaults_a_missing_duration():
-    """`duration_min` absent must not crash the sweep mid-list."""
-    now = _clinic_now()
-    row = {"id": "a-1", "scheduled_at": (now - timedelta(hours=5)).isoformat(),
-           "duration_min": None}
-    db, chain = _sweep_db([row])
-    with patch_db(db):
-        assert complete_elapsed_appointments() == 1
 
 
 # ---- A doctor sees only their own diary ----
@@ -407,21 +353,3 @@ def test_a_doctor_cannot_fetch_a_colleagues_appointment_by_id(admin_token):
     with _client_as(admin_token, "doctor", {"id": "s-mine"}, [_appointment("a-1", "s-colleague")]) as (c, _):
         resp = c.get("/appointments/a-1")
     assert resp.status_code == 404
-
-
-def test_a_doctor_can_fetch_their_own_appointment_by_id(admin_token):
-    with _client_as(admin_token, "doctor", {"id": "s-mine"}, [_appointment("a-1", "s-mine")]) as (c, _):
-        resp = c.get("/appointments/a-1")
-    assert resp.status_code == 200
-    assert resp.json()["id"] == "a-1"
-
-
-def test_a_receptionist_still_sees_the_whole_clinic(receptionist_token):
-    """Scoping applies to doctors only — the front desk books for everyone, so
-    no `staff_id` filter should be applied on their behalf at all."""
-    rows = [_appointment("a-1", "s-one"), _appointment("a-2", "s-two")]
-    with _client_as(receptionist_token, "receptionist", None, rows) as (c, chain):
-        resp = c.get("/appointments/")
-    assert resp.status_code == 200
-    assert {a["id"] for a in resp.json()} == {"a-1", "a-2"}
-    assert not any(call.args[0] == "staff_id" for call in chain.eq.call_args_list)

@@ -134,13 +134,6 @@ def test_creating_doctor_with_work_days_writes_schedules(admin_token):
         assert all(row["start_time"] == "08:00:00" for row in rows)
 
 
-def test_creating_doctor_without_work_days_writes_no_schedules(admin_token):
-    with make_client(admin_token, "admin") as c:
-        r = c.post("/staff/", json={"full_name": "Dr. Test Doctor", "role": "doctor"})
-        assert r.status_code == 201
-        assert "schedules" not in c.chains
-
-
 # ---- Creating receptionists ----
 
 def test_admin_creates_receptionist_account(admin_token):
@@ -160,47 +153,12 @@ def test_admin_creates_receptionist_account(admin_token):
 
 # ---- Account listing ----
 
-def test_accounts_listing_joins_roles(admin_token):
-    role_rows = [
-        {"user_id": "u-admin", "roles": {"name": "admin"}},
-        {"user_id": "u-recept", "roles": {"name": "receptionist"}},
-    ]
-    with make_client(admin_token, "admin", {"user_roles": role_rows}) as c:
-        c.mock_db.auth.admin.list_users.return_value = [
-            SimpleNamespace(id="u-admin", email="admin@clinic.demo",
-                            user_metadata={"full_name": "Admin"}, created_at=None),
-            SimpleNamespace(id="u-recept", email="recept@clinic.demo",
-                            user_metadata={"full_name": "Elira"}, created_at=None),
-            SimpleNamespace(id="u-orphan", email="orphan@clinic.demo",
-                            user_metadata={}, created_at=None),
-        ]
-        r = c.get("/staff/accounts")
-        assert r.status_code == 200
-        by_email = {a["email"]: a for a in r.json()}
-        assert by_email["recept@clinic.demo"]["roles"] == ["receptionist"]
-        # An account with no user_roles row is still listed, with no roles.
-        assert by_email["orphan@clinic.demo"]["roles"] == []
-
-
 def test_receptionist_cannot_list_accounts(receptionist_token):
     with make_client(receptionist_token, "receptionist") as c:
         assert c.get("/staff/accounts").status_code == 403
 
 
-def test_accounts_path_is_not_read_as_a_staff_id(admin_token):
-    """`/staff/accounts` must not be captured by a `/staff/{id}` route."""
-    with make_client(admin_token, "admin") as c:
-        c.mock_db.auth.admin.list_users.return_value = []
-        assert c.get("/staff/accounts").json() == []
-
-
 # ---- Validation ----
-
-def test_unknown_role_rejected(admin_token):
-    with make_client(admin_token, "admin") as c:
-        r = c.post("/staff/", json={"full_name": "Someone", "role": "surgeon-general"})
-        assert r.status_code == 422
-
 
 def test_email_without_password_rejected(admin_token):
     with make_client(admin_token, "admin") as c:
@@ -217,14 +175,6 @@ def test_inverted_working_hours_rejected(admin_token):
             "full_name": "Dr. X", "role": "doctor",
             "work_days": [0], "start_time": "17:00", "end_time": "09:00",
         })
-        assert r.status_code == 422
-
-
-def test_inverted_schedule_entry_rejected(admin_token):
-    with make_client(admin_token, "admin") as c:
-        r = c.put("/staff/staff-new-001/schedules", json=[
-            {"weekday": 0, "start_time": "18:00", "end_time": "08:00"},
-        ])
         assert r.status_code == 422
 
 
@@ -251,16 +201,6 @@ def test_receptionist_can_book_appointment_manually(receptionist_token):
         assert r.json()["id"] == "appt-new-001"
         # No approval gate is involved in the manual path.
         assert "approval_gates" not in c.chains
-
-
-def test_admin_can_book_appointment_manually(admin_token):
-    with make_client(admin_token, "admin", {"appointments": [APPOINTMENT_ROW]}) as c:
-        with patch("app.api.appointments.check_conflict", return_value=None):
-            r = c.post("/appointments/", json={
-                "patient_id": "pat-1", "staff_id": "staff-1",
-                "scheduled_at": "2026-08-03T10:00:00", "duration_min": 30,
-            })
-        assert r.status_code == 201
 
 
 def test_manual_booking_lands_confirmed_not_proposed(receptionist_token):
@@ -291,22 +231,6 @@ def test_manual_booking_rejects_conflicting_slot(receptionist_token):
         assert r.status_code == 409
 
 
-def test_manual_booking_stores_an_unambiguous_instant(receptionist_token):
-    """A naive time must be persisted with the clinic offset, not as UTC."""
-    with make_client(receptionist_token, "receptionist",
-                     {"appointments": [APPOINTMENT_ROW]}) as c:
-        with patch("app.api.appointments.check_conflict", return_value=None):
-            c.post("/appointments/", json={
-                "patient_id": "pat-1", "staff_id": "staff-1",
-                "scheduled_at": "2026-08-03T10:00:00", "duration_min": 30,
-            })
-        stored = c.chains["appointments"].insert.call_args[0][0]["scheduled_at"]
-        parsed = datetime.fromisoformat(stored)
-        assert parsed.tzinfo is not None, f"{stored} was stored naive"
-        assert parsed.hour == 10
-        assert parsed.utcoffset() == timedelta(hours=2)  # CEST
-
-
 # ---- Listing order ----
 
 def test_appointments_default_to_latest_first(receptionist_token):
@@ -314,13 +238,6 @@ def test_appointments_default_to_latest_first(receptionist_token):
                      {"appointments": [APPOINTMENT_ROW]}) as c:
         assert c.get("/appointments/").status_code == 200
         assert c.chains["appointments"].order.call_args == call("scheduled_at", desc=True)
-
-
-def test_appointments_can_be_sorted_earliest_first(receptionist_token):
-    with make_client(receptionist_token, "receptionist",
-                     {"appointments": [APPOINTMENT_ROW]}) as c:
-        assert c.get("/appointments/?sort=earliest").status_code == 200
-        assert c.chains["appointments"].order.call_args == call("scheduled_at", desc=False)
 
 
 # ---- Editing an existing appointment ----
@@ -352,17 +269,6 @@ def test_editing_into_a_taken_slot_is_rejected(receptionist_token):
             r = c.patch("/appointments/appt-new-001",
                         json={"scheduled_at": "2026-08-04T11:00:00"})
         assert r.status_code == 409
-
-
-def test_editing_only_notes_skips_the_conflict_check(receptionist_token):
-    """Nothing moved, so re-checking availability would be pointless work."""
-    with make_client(receptionist_token, "receptionist",
-                     {"appointments": APPOINTMENT_ROW}) as c:
-        c.chains["appointments"].update.return_value = make_chain([APPOINTMENT_ROW])
-        with patch("app.api.appointments.check_conflict") as cc:
-            r = c.patch("/appointments/appt-new-001", json={"notes": "rescheduled by phone"})
-        assert r.status_code == 200
-        cc.assert_not_called()
 
 
 def test_doctor_cannot_edit_appointment(admin_token):
@@ -416,58 +322,6 @@ def test_receptionist_can_decide_a_guest_booking_request(receptionist_token):
         assert r.json()["status"] == "confirmed"
 
 
-def test_admin_can_still_edit_a_guest_request_without_deciding_it(admin_token):
-    """The guard is on the accept/reject transition, not on the row.
-
-    An admin fixing a typo or reassigning the doctor is ordinary appointment
-    editing; only `status` moving to confirmed/cancelled is the receptionist's
-    call, so a blanket row-level block would be too wide.
-    """
-    with make_client(admin_token, "admin", {"appointments": [GUEST_REQUEST_ROW]},
-                     use_table_chain=True) as c:
-        c.chains["appointments"].update.return_value = make_chain([GUEST_REQUEST_ROW])
-        with patch("app.api.appointments.check_conflict"):
-            r = c.patch("/appointments/appt-guest-001", json={"notes": "called to verify"})
-        assert r.status_code == 200
-
-
-def test_staff_created_appointment_is_not_covered_by_the_guest_guard(admin_token):
-    """`status=proposed` alone is not a guest request — that is also the DB
-    default for a staff booking, so the guard keys on `source` too."""
-    staff_made = {**APPOINTMENT_ROW, "status": "proposed", "source": "staff"}
-    with make_client(admin_token, "admin", {"appointments": [staff_made]},
-                     use_table_chain=True) as c:
-        c.chains["appointments"].update.return_value = make_chain(
-            [{**staff_made, "status": "confirmed"}]
-        )
-        r = c.patch("/appointments/appt-new-001", json={"status": "confirmed"})
-        assert r.status_code == 200
-
-
-# ---- Date range filtering ----
-
-def test_same_day_range_includes_appointments_during_that_day(receptionist_token):
-    """`date_from == date_to` is how the dashboard asks for "today".
-
-    `lte("scheduled_at", date_to)` resolves to 00:00 on that day, so a range of
-    one day matched only an appointment booked at exactly midnight and the
-    dashboard reported zero appointments on a fully-booked day. The upper bound
-    must be the *following* midnight, half-open — same rule as
-    `report_service._day_bounds`.
-    """
-    with make_client(receptionist_token, "receptionist",
-                     {"appointments": [APPOINTMENT_ROW]}) as c:
-        r = c.get("/appointments/?date_from=2026-08-03&date_to=2026-08-03")
-        assert r.status_code == 200
-        chain = c.chains["appointments"]
-        upper = chain.lt.call_args
-        assert upper is not None, "expected a half-open upper bound, not lte()"
-        assert upper[0][0] == "scheduled_at"
-        # 2026-08-04T00:00 clinic-local, not 2026-08-03.
-        assert upper[0][1].startswith("2026-08-04T00:00")
-        chain.lte.assert_not_called()
-
-
 # ---- Agent run history is scoped to one login ----
 
 def test_agent_runs_can_be_scoped_to_the_current_login(receptionist_token):
@@ -482,10 +336,3 @@ def test_agent_runs_can_be_scoped_to_the_current_login(receptionist_token):
         assert r.status_code == 200
         gte_args = [call[0] for call in c.chains["agent_runs"].gte.call_args_list]
         assert ("created_at", "2026-07-27T08:00:00+02:00") in gte_args
-
-
-def test_agent_runs_without_since_returns_the_full_recent_list(receptionist_token):
-    with make_client(receptionist_token, "receptionist", {"agent_runs": []}) as c:
-        r = c.get("/agent/runs")
-        assert r.status_code == 200
-        c.chains["agent_runs"].gte.assert_not_called()

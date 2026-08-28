@@ -42,7 +42,7 @@ cd backend
 pip install -r requirements.txt
 pytest tests/ -v
 ```
-Expected: 273 tests passing. No `.env` or live Supabase connection is needed —
+Expected: 246 tests passing. No `.env` or live Supabase connection is needed —
 the suite is fully mocked.
 
 ## 4b. Measure accuracy (evaluation figures)

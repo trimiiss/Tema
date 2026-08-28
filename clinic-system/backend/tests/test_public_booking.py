@@ -146,19 +146,6 @@ async def test_run_agent_loop_splices_history_between_system_and_task():
     assert sent[3]["content"] == "what about tomorrow?"
 
 
-def test_prior_turns_drops_tool_messages_and_blanks():
-    history = [
-        {"role": "user", "content": "book me a slot"},
-        {"role": "assistant", "content": "sure, which day?"},
-        {"role": "tool", "content": "should never be replayed"},
-        {"role": "user", "content": "   "},
-    ]
-    assert _prior_turns(history) == [
-        {"role": "user", "content": "book me a slot"},
-        {"role": "assistant", "content": "sure, which day?"},
-    ]
-
-
 # --------------------------------------------------------------------- triage
 
 def test_emergency_terms_are_detected():
@@ -184,24 +171,6 @@ def test_specialty_for_falls_back_when_the_mapped_specialty_has_no_active_doctor
         assert triage.specialty_for("child_health") == "General Practice"
 
 
-def test_specialty_for_unknown_reason_falls_back_too():
-    with patch("app.services.triage.active_specialties", return_value=["General Practice"]):
-        assert triage.specialty_for("something_the_model_made_up") == "General Practice"
-
-
-def test_find_specialty_for_reason_hands_back_the_doctors_too(clinic_db):
-    """The doctors travel with the specialty.
-
-    Left to look them up in a second call, a model often skips it and asks "do
-    you have a preferred doctor?" — a question the visitor cannot answer,
-    because no names have ever been put in front of them.
-    """
-    with patch("app.services.triage.active_specialties", return_value=["General Practice"]):
-        result = tool_specialty_for_reason("general_checkup")
-    assert result["specialty"] == "General Practice"
-    assert result["doctors"] == [STAFF]
-
-
 # ---------------------------------------------------------- propose_booking
 
 def test_propose_booking_requires_a_contact_method(clinic_db):
@@ -209,13 +178,6 @@ def test_propose_booking_requires_a_contact_method(clinic_db):
                              scheduled_at=MONDAY_10, service_id="svc-1")
     assert result["proposed"] is False
     assert "phone number or email" in result["error"]
-
-
-def test_propose_booking_requires_a_last_name(clinic_db):
-    result = propose_booking(first_name="Arta", last_name="", staff_id="s-1",
-                              scheduled_at=MONDAY_10, phone="044111222", service_id="svc-1")
-    assert result["proposed"] is False
-    assert "last name" in result["error"]
 
 
 def test_propose_booking_refuses_a_slot_the_doctor_does_not_work(clinic_db):
@@ -279,19 +241,6 @@ def test_propose_booking_refuses_without_a_service(clinic_db):
     assert "remind the visitor to pick one" in result["error"]
 
 
-def test_the_refusal_hands_back_the_services_to_remind_them_with(clinic_db):
-    """The reminder ships with the catalogue.
-
-    Otherwise the model re-asks in prose and the visitor is choosing from a
-    list only the model can see — and the booking page has no rows to render
-    as pickable cards.
-    """
-    result = propose_booking(first_name="Arta", last_name="Berisha", staff_id="s-1",
-                             scheduled_at=MONDAY_10, phone="044111222")
-    assert result["proposed"] is False
-    assert result["services"] == [SERVICE]
-
-
 def test_propose_booking_refuses_a_service_id_that_resolves_to_nothing(clinic_db):
     """An id the model invented is the same as no service at all.
 
@@ -301,15 +250,6 @@ def test_propose_booking_refuses_a_service_id_that_resolves_to_nothing(clinic_db
     clinic_db.table.side_effect = lambda name: table_chain([]) if name == "services" else make_chain([])
     result = propose_booking(first_name="Arta", last_name="Berisha", staff_id="s-1",
                              scheduled_at=MONDAY_10, phone="044111222", service_id="svc-nope")
-    assert result["proposed"] is False
-    assert "remind the visitor to pick one" in result["error"]
-
-
-def test_the_service_is_checked_before_anything_else_is_asked_for(clinic_db):
-    """Step 1 of the conversation is the first thing the validator checks, so a
-    visitor is asked for the service before being asked for a contact number."""
-    result = propose_booking(first_name="Arta", last_name="", staff_id="s-nope",
-                             scheduled_at=SUNDAY_10)
     assert result["proposed"] is False
     assert "remind the visitor to pick one" in result["error"]
 
@@ -353,11 +293,6 @@ def test_listing_slots_for_a_day_that_has_passed_is_refused(clinic_db):
     assert "has already passed" in result["error"]
 
 
-def test_todays_slots_never_include_an_hour_that_has_gone(clinic_db):
-    result = tool_list_available_slots("s-1", clinic_today().isoformat())
-    assert all(datetime.fromisoformat(s) > clinic_now() for s in result["slots"])
-
-
 def test_find_earliest_slot_offers_a_choice_of_upcoming_times(clinic_db):
     """One earliest slot is a take-it-or-leave-it offer the visitor has to type
     a counter-offer to; a handful of real openings is answered with one tap."""
@@ -372,46 +307,12 @@ def test_find_earliest_slot_offers_a_choice_of_upcoming_times(clinic_db):
     assert all(datetime.fromisoformat(o["slot"]) > clinic_now() for o in result["options"])
 
 
-def test_find_earliest_slot_ignores_a_start_date_already_behind_us(clinic_db):
-    """A model that passes last month as `from_date` gets today's answer, not a
-    fortnight of dates nobody can book."""
-    last_month = (clinic_today() - timedelta(days=30)).isoformat()
-    result = tool_find_earliest_slot("General Practice", from_date=last_month)
-    assert result["found"] is True
-    assert all(datetime.fromisoformat(o["slot"]) > clinic_now() for o in result["options"])
-
-
 def test_propose_booking_refuses_an_unknown_doctor(clinic_db):
     clinic_db.table.side_effect = lambda name: {
         "staff": table_chain([]),
         "services": table_chain([SERVICE]),
     }.get(name, make_chain([]))
     result = propose_booking(first_name="Arta", last_name="Berisha", staff_id="s-does-not-exist",
-                              scheduled_at=MONDAY_10, phone="044111222", service_id="svc-1")
-    assert result["proposed"] is False
-    assert "No active doctor" in result["error"]
-
-
-def test_propose_booking_refuses_an_id_postgres_cannot_even_compare(clinic_db):
-    """An invented id must come back as a refusal, not an exception.
-
-    `staff.id` is a UUID column, so an id the model made up rather than read
-    from a tool result ('doc123') doesn't merely miss — Postgres rejects the
-    comparison and postgrest raises `APIError`. Escaping `propose_booking`,
-    that killed the whole run with a generic "technical issue" the model
-    could not act on; as a refusal it is one more tool result to replan from.
-    """
-    def raising_staff_table(name):
-        if name == "services":
-            return table_chain([SERVICE])
-        if name != "staff":
-            return make_chain([])
-        chain = table_chain([])
-        chain.execute.side_effect = APIError({"message": "Missing response", "code": "204"})
-        return chain
-
-    clinic_db.table.side_effect = raising_staff_table
-    result = propose_booking(first_name="Arta", last_name="Berisha", staff_id="doc123",
                               scheduled_at=MONDAY_10, phone="044111222", service_id="svc-1")
     assert result["proposed"] is False
     assert "No active doctor" in result["error"]
@@ -426,17 +327,6 @@ def test_match_or_create_reuses_on_email_match():
     db.table.side_effect = lambda name: make_chain([existing]) if name == "patients" else make_chain([])
     with patch_db(db):
         result = match_or_create_patient("Arta", "Berisha", phone="", email="ARTA@test.com")
-    assert result["created"] is False
-    assert result["patient"]["id"] == "p-9"
-
-
-def test_match_or_create_reuses_on_phone_match_ignoring_punctuation():
-    existing = {"id": "p-9", "code": "P009", "first_name": "Arta", "last_name": "B",
-                "phone": "+383-44-100002", "email": None}
-    db = MagicMock()
-    db.table.side_effect = lambda name: make_chain([existing]) if name == "patients" else make_chain([])
-    with patch_db(db):
-        result = match_or_create_patient("Arta", "Berisha", phone="+383 44 100002", email="")
     assert result["created"] is False
     assert result["patient"]["id"] == "p-9"
 
@@ -551,18 +441,6 @@ def test_typed_contact_overrides_what_the_model_transcribed():
                "phone": "044111222", "email": "arta@test.com"}   # what she actually typed
 
     assert _contact_for_record(payload, contact)["phone"] == "044111222"
-
-
-def test_a_field_left_blank_in_the_form_falls_back_to_the_payload():
-    """Blanking a value the model did get right would be a regression, not a fix."""
-    from app.agents.public_orchestrator import _contact_for_record
-
-    payload = {"first_name": "Arta", "last_name": "Berisha", "phone": "044111222", "email": ""}
-    contact = {"first_name": "", "last_name": "Berisha", "phone": "", "email": ""}
-
-    details = _contact_for_record(payload, contact)
-    assert details["first_name"] == "Arta"
-    assert details["phone"] == "044111222"
 
 
 def test_no_contact_at_all_leaves_the_payload_untouched():

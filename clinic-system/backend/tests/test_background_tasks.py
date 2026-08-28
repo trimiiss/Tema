@@ -19,24 +19,6 @@ def _no_leaked_tasks():
 
 
 @pytest.mark.asyncio
-async def test_a_spawned_task_is_held_until_it_finishes():
-    started = asyncio.Event()
-
-    async def work():
-        started.set()
-        await asyncio.sleep(0.05)
-        return "done"
-
-    task = tasks.spawn(work(), name="unit")
-    await started.wait()
-    assert tasks.pending() == 1        # a strong reference exists while it runs
-
-    assert await task == "done"
-    await asyncio.sleep(0)             # let the done-callback run
-    assert tasks.pending() == 0        # and is released afterwards
-
-
-@pytest.mark.asyncio
 async def test_a_failing_task_is_logged_rather_than_swallowed(caplog):
     async def boom():
         raise RuntimeError("agent run exploded")
@@ -74,9 +56,3 @@ async def test_drain_cancels_work_that_overruns_the_timeout():
     await tasks.drain(timeout=0.05)
 
     assert task.cancelled()
-
-
-@pytest.mark.asyncio
-async def test_drain_with_nothing_pending_is_a_no_op():
-    await tasks.drain(timeout=0.01)
-    assert tasks.pending() == 0

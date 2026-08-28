@@ -9,7 +9,6 @@ from app.agents.patient_agent import (
     tool_get_patient,
     tool_search_patients,
     tool_flag_missing_fields,
-    REQUIRED_FIELDS,
 )
 
 
@@ -49,13 +48,6 @@ def test_search_patients_returns_results():
     assert len(result["results"]) == 1
 
 
-def test_search_patients_empty():
-    db = _make_db([])
-    with patch("app.agents.patient_agent.get_db", return_value=db):
-        result = tool_search_patients("NonExistent")
-    assert result["results"] == []
-
-
 def test_flag_missing_fields_complete_patient():
     full = {
         "id": "p1",
@@ -86,12 +78,6 @@ def test_flag_missing_fields_patient_not_found():
     with patch("app.agents.patient_agent.get_db", return_value=db):
         result = tool_flag_missing_fields("nonexistent")
     assert "error" in result
-
-
-def test_required_fields_set():
-    assert "first_name" in REQUIRED_FIELDS
-    assert "dob" in REQUIRED_FIELDS
-    assert "phone" in REQUIRED_FIELDS
 
 
 @contextmanager

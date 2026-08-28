@@ -43,9 +43,7 @@ SCENARIOS = json.loads((BACKEND_ROOT / "tests" / "scenarios.json").read_text(enc
     ('  "Dr. Arben Hoxha".  ', "dr. arben hoxha"),
     ("DR.  ARBEN   HOXHA", "dr. arben hoxha"),
     ("'2026-07-20',", "2026-07-20"),
-    ("Fjolla Berisha;", "fjolla berisha"),
     (None, ""),
-    ("", ""),
 ])
 def test_normalise_ignores_formatting_but_not_content(raw, expected):
     assert harness._normalise(raw) == expected

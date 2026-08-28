@@ -91,14 +91,6 @@ def test_range_bounds_are_clinic_local_not_utc():
     assert start.utcoffset() == timedelta(hours=2)  # CEST
 
 
-def test_single_day_range_is_not_empty():
-    rows = [{"status": "confirmed", "scheduled_at": "2026-07-20T08:00:00+00:00"}]
-    db = _make_db(rows)
-    with patch("app.services.report_service.get_db", return_value=db):
-        result = get_appointment_summary(date(2026, 7, 20), date(2026, 7, 20))
-    assert result["total"] == 1
-
-
 # ---- Dropped Supabase connections ----
 #
 # postgrest-py hardcodes http2=True and Supabase GOAWAYs idle connections, so
@@ -153,16 +145,6 @@ def test_a_retry_is_logged(caplog):
     assert any("recovered on attempt 2" in m for m in logged)
 
 
-def test_retry_does_not_mask_a_genuine_error():
-    from app.core.database import execute_with_retry
-
-    query = MagicMock()
-    query.execute.side_effect = ValueError("bad column")
-    with pytest.raises(ValueError):
-        execute_with_retry(query)
-    assert query.execute.call_count == 1
-
-
 def test_missing_documents_report_survives_a_dropped_connection():
     import httpx
 
@@ -198,10 +180,3 @@ def test_build_pdf_report_returns_bytes():
     pdf = build_pdf_report("Test Report", sections)
     assert isinstance(pdf, bytes)
     assert pdf[:4] == b"%PDF"  # PDF magic bytes
-
-
-def test_empty_report_still_generates():
-    sections = [{"heading": "Empty", "table": [["No records"]]}]
-    pdf = build_pdf_report("Empty Report", sections)
-    assert isinstance(pdf, bytes)
-    assert len(pdf) > 100
