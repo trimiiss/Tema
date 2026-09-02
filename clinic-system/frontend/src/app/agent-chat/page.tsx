@@ -21,20 +21,25 @@ const EXAMPLES = [
 
 const isFinished = (status?: string) => status === "completed" || status === "failed";
 
-function runLabel(run: any): string {
-  const short = run.id.slice(0, 8);
-  if (run.status === "awaiting_approval") return `Waiting for approval (run ${short})`;
-  if (run.status === "failed") return `Run ${short} failed`;
-  if (run.status === "running") return `Processing… (run ${short})`;
-  return `Run ${short}`;
-}
+// An agent message carried a "Processing… (run 0cd943e3)" label, written once
+// when the run started and never updated — so a finished run still announced
+// itself as processing, above its own answer, and quoted a run id that means
+// nothing to the person reading it. `RunDetail` already reports live status
+// from the run itself, so the bubble carries no text of its own.
+const RUN_HAS_NO_LABEL = "";
+
+// How persistently to read a run's row back when its stream stops early — see
+// `reconcile` in `RunDetail`. Ten tries, three seconds apart, covers the runs
+// this system produces with room to spare.
+const RECONCILE_ATTEMPTS = 10;
+const RECONCILE_DELAY_MS = 3000;
 
 /** Rebuild the transcript from the runs the backend already stores. */
 function messagesFromRuns(runs: any[]): Message[] {
   // The endpoint returns newest first; a transcript reads oldest first.
   return [...runs].reverse().flatMap((run): Message[] => [
     { role: "user", text: run.input_text },
-    { role: "agent", text: runLabel(run), runId: run.id, run },
+    { role: "agent", text: RUN_HAS_NO_LABEL, runId: run.id, run },
   ]);
 }
 
@@ -107,14 +112,26 @@ function RunDetail({ runId, initialRun, onGateDecide, canDecide }: { runId: stri
     if (settled) return;
     setRun(initialRun ?? null);
     const controller = new AbortController();
-    agentApi.streamRun(runId, (event) => {
+    let cancelled = false;
+    // Tracked alongside the state so `reconcile` can tell a stream that ended
+    // because the run finished from one that ended for any other reason.
+    let status: string | undefined = initialRun?.status;
+
+    const apply = (event: any) => {
+      if (event.type === "snapshot") status = event.run?.status;
+      if (event.type === "status" && event.status) status = event.status;
       setRun((prev: any) => {
         if (event.type === "snapshot") {
           return { ...event.run, steps: event.steps, gates: event.gates };
         }
         if (!prev) return prev;
         if (event.type === "step") {
-          return { ...prev, steps: [...(prev.steps ?? []), event.step] };
+          // The snapshot is read after the subscription opens (see
+          // `api/agents.stream_run`), so a step can legitimately arrive in
+          // both. Same row, same id — keep the one already listed.
+          const steps = prev.steps ?? [];
+          if (steps.some((s: any) => s.id === event.step.id)) return prev;
+          return { ...prev, steps: [...steps, event.step] };
         }
         if (event.type === "gate") {
           const gates = prev.gates ?? [];
@@ -130,10 +147,36 @@ function RunDetail({ runId, initialRun, onGateDecide, canDecide }: { runId: stri
         }
         return prev;
       });
-    }, controller.signal).catch((e: any) => {
-      if (e?.name !== "AbortError") console.error(e);
-    });
-    return () => controller.abort();
+    };
+
+    /** Read the run row back until it settles.
+     *
+     * The stream is the fast path, not the only one. When it ends before the
+     * run does — a dropped connection, an idle response some proxy closed, a
+     * machine that slept, a stream that never opened at all — nothing was ever
+     * going to correct the trace again: the run went on to finish and store
+     * its answer, while the page sat on the last few steps it happened to
+     * catch and reported "running" indefinitely. The row is authoritative and
+     * one request cheap, so read it rather than leave the answer stranded. */
+    async function reconcile() {
+      for (let attempt = 0; attempt < RECONCILE_ATTEMPTS && !cancelled; attempt++) {
+        await new Promise(r => setTimeout(r, RECONCILE_DELAY_MS));
+        if (cancelled) return;
+        try {
+          const latest = await agentApi.getRun(runId);
+          // `getRun` carries the run's whole trace, so this also replaces any
+          // steps the interrupted stream had left half-listed.
+          setRun((prev: any) => ({ ...(prev ?? {}), ...latest }));
+          if (latest.status !== "running") return;
+        } catch { /* a later attempt can still succeed */ }
+      }
+    }
+
+    agentApi.streamRun(runId, apply, controller.signal)
+      .catch((e: any) => { if (e?.name !== "AbortError") console.error(e); })
+      .finally(() => { if (!cancelled && !isFinished(status)) reconcile(); });
+
+    return () => { cancelled = true; controller.abort(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runId, settled]);
 
@@ -227,7 +270,7 @@ export default function AgentChatPage() {
     setMessages(m => [...m, { role: "user", text: msg }]);
     try {
       const run = await agentApi.run(msg, chatId());
-      setMessages(m => [...m, { role: "agent", text: `Processing… (run ${run.id.slice(0, 8)})`, runId: run.id }]);
+      setMessages(m => [...m, { role: "agent", text: RUN_HAS_NO_LABEL, runId: run.id }]);
     } catch (e: any) {
       toast.error(e.message);
       setMessages(m => [...m, { role: "agent", text: `Error: ${e.message}` }]);

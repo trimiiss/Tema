@@ -12,6 +12,11 @@ type Message = { role: "user" | "agent"; text: string; runId?: string; run?: any
 
 const isFinished = (status?: string) => status === "completed" || status === "failed";
 
+// How persistently to read a run back when its stream stops early — see
+// `reconcile` in `BookingRunDetail`.
+const RECONCILE_ATTEMPTS = 10;
+const RECONCILE_DELAY_MS = 3000;
+
 function messagesFromRuns(runs: any[]): Message[] {
   return [...runs].reverse().flatMap((run): Message[] => [
     { role: "user", text: run.input_text },
@@ -121,11 +126,25 @@ function BookingRunDetail({
     if (!runId || settled) return;
     setRun(initialRun ?? null);
     const controller = new AbortController();
-    publicBookingApi.streamRun(runId, (event) => {
+    let cancelled = false;
+    // Tracked alongside the state so `reconcile` can tell a stream that ended
+    // because the run finished from one that ended for any other reason.
+    let status: string | undefined = initialRun?.status;
+
+    const apply = (event: any) => {
+      if (event.type === "snapshot") status = event.run?.status;
+      if (event.type === "status" && event.status) status = event.status;
       setRun((prev: any) => {
         if (event.type === "snapshot") return { ...event.run, steps: event.steps, gates: event.gates };
         if (!prev) return prev;
-        if (event.type === "step") return { ...prev, steps: [...(prev.steps ?? []), event.step] };
+        if (event.type === "step") {
+          // The snapshot is read after the subscription opens (see
+          // `api/public.stream_run`), so a step can arrive in both. Same row,
+          // same id — keep the one already listed.
+          const steps = prev.steps ?? [];
+          if (steps.some((s: any) => s.id === event.step.id)) return prev;
+          return { ...prev, steps: [...steps, event.step] };
+        }
         if (event.type === "gate") {
           const gates = prev.gates ?? [];
           const idx = gates.findIndex((g: any) => g.id === event.gate.id);
@@ -138,8 +157,34 @@ function BookingRunDetail({
         }
         return prev;
       });
-    }, controller.signal).catch((e: any) => { if (e?.name !== "AbortError") console.error(e); });
-    return () => controller.abort();
+    };
+
+    /** Read this run back until it settles.
+     *
+     * A stream that ends before its run does leaves the visitor watching three
+     * bouncing dots forever — and on this surface the thing stranded on the
+     * other side of that dead connection is the confirmation card they have to
+     * tap to actually get an appointment. There is no single-run endpoint
+     * here, so the session's own run list stands in for one. */
+    async function reconcile() {
+      for (let attempt = 0; attempt < RECONCILE_ATTEMPTS && !cancelled; attempt++) {
+        await new Promise(r => setTimeout(r, RECONCILE_DELAY_MS));
+        if (cancelled) return;
+        try {
+          const latest = (await publicBookingApi.listRuns()).find((r: any) => r.id === runId);
+          if (latest) {
+            setRun((prev: any) => ({ ...(prev ?? {}), ...latest }));
+            if (latest.status !== "running") return;
+          }
+        } catch { /* a later attempt can still succeed */ }
+      }
+    }
+
+    publicBookingApi.streamRun(runId, apply, controller.signal)
+      .catch((e: any) => { if (e?.name !== "AbortError") console.error(e); })
+      .finally(() => { if (!cancelled && !isFinished(status)) reconcile(); });
+
+    return () => { cancelled = true; controller.abort(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runId, settled]);
 

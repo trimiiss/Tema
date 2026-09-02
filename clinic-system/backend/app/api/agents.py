@@ -111,19 +111,29 @@ async def stream_run(
     user: dict = Depends(require_roles("admin", "receptionist")),
 ):
     db = get_db()
-    run = execute_with_retry(db.table("agent_runs").select("*").eq("id", run_id).maybe_single())
-    if not run.data:
+    known = execute_with_retry(db.table("agent_runs").select("*").eq("id", run_id).maybe_single())
+    if not known.data:
         raise HTTPException(status_code=404, detail="Run not found")
 
     async def event_gen():
         q = subscribe(run_id)
         try:
+        # Subscribe *before* reading the run row, not after. Between a read and
+        # a subscription the run can finish, and the `status`/`done` events it
+        # published in that window reach nobody: the client is left holding a
+        # snapshot that says "running" with no stream left to correct it, and a
+        # finished answer sits on screen as "Processing…" forever. Reading the
+        # row afterwards means the snapshot can never be older than the
+        # subscription. A step caught by both arrives twice, and the client
+        # drops the duplicate by id.
+            fresh = execute_with_retry(db.table("agent_runs").select("*").eq("id", run_id).maybe_single())
+            run = fresh.data or known.data
             steps = execute_with_retry(db.table("agent_steps").select("*").eq("run_id", run_id).order("timestamp")).data
             gates = execute_with_retry(db.table("approval_gates").select("*").eq("run_id", run_id)).data
-            snapshot = {"type": "snapshot", "run": run.data, "steps": steps, "gates": gates}
+            snapshot = {"type": "snapshot", "run": run, "steps": steps, "gates": gates}
             yield f"data: {json.dumps(snapshot)}\n\n"
 
-            if run.data["status"] in ("completed", "failed"):
+            if run["status"] in ("completed", "failed"):
                 return
 
             while True:
