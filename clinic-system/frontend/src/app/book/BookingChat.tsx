@@ -32,26 +32,49 @@ function Typing() {
   );
 }
 
-/** Pull the latest occurrence of each picker-relevant tool step out of a run's
- * trace. Steps stream in one at a time over SSE, so this recomputes on every
- * render rather than caching — the list is short and this is not a hot path. */
+// Tool steps that put buttons on screen, in the order the conversation walks
+// through them. Everything else in a trace is bookkeeping the visitor never sees.
+const PICKER_ACTIONS = new Set([
+  "list_reasons", "list_services", "list_doctors", "find_specialty_for_reason",
+  "list_available_slots", "find_earliest_slot", "propose_booking",
+]);
+
+/** The one picker the agent is actually asking about, out of a run's trace.
+ *
+ * A single turn routinely looks several things up on its way to an answer —
+ * the catalogue on the way to a doctor, the doctors on the way to a day's
+ * openings. Rendering every picker the trace touched drew the service cards
+ * again underneath a reply about appointment times, which reads as the agent
+ * having forgotten the service the visitor already picked. Only the *last*
+ * picker-relevant step gets buttons: that one is the question being asked now.
+ *
+ * Steps stream in one at a time over SSE, so this recomputes on every render
+ * rather than caching — the list is short and this is not a hot path. */
 function pickerSteps(steps: any[] = []) {
   const byAction: Record<string, any> = {};
-  for (const s of steps) byAction[s.action] = s; // later ones overwrite earlier
-  const earliest = byAction["find_earliest_slot"]?.output;
+  let last = "";
+  for (const s of steps) {
+    byAction[s.action] = s; // later ones overwrite earlier
+    if (PICKER_ACTIONS.has(s.action)) last = s.action;
+  }
+  // The output of `action`, but only while it is the turn's closing question.
+  const asked = (action: string) => (action === last ? byAction[action]?.output : undefined);
+
+  const earliest = asked("find_earliest_slot");
+  // `propose_booking` is a picker step only when it refused: it hands back
+  // either the catalogue (no service chosen yet) or this doctor's real
+  // openings (the time had already passed), so the apology arrives with
+  // pickable cards rather than asking the visitor to type a name or a time
+  // they can't see.
+  const refusal = asked("propose_booking");
   return {
-    reasons: byAction["list_reasons"]?.output?.reasons,
-    // `propose_booking` refused for a missing service carries the catalogue
-    // with it, so the reminder arrives with the same pickable cards rather
-    // than asking the visitor to type a service name they can't see.
-    services: byAction["list_services"]?.output?.services
-      ?? byAction["propose_booking"]?.output?.services,
+    reasons: asked("list_reasons")?.reasons,
+    services: asked("list_services")?.services ?? refusal?.services,
     // `find_specialty_for_reason` returns the doctors alongside the specialty,
     // so the visitor gets pickable names even on the turn where the agent only
     // worked out which specialty they need.
-    doctors: byAction["list_doctors"]?.output?.doctors
-      ?? byAction["find_specialty_for_reason"]?.output?.doctors,
-    slots: byAction["list_available_slots"]?.output,
+    doctors: asked("list_doctors")?.doctors ?? asked("find_specialty_for_reason")?.doctors,
+    slots: asked("list_available_slots"),
     // `find_earliest_slot` offers several openings now, so the visitor picks
     // rather than accepting or re-typing. A run restored from history may
     // carry only the single earliest one, so fall back to that shape.
@@ -59,10 +82,24 @@ function pickerSteps(steps: any[] = []) {
       ?? (earliest?.found
         ? [{ staff_id: earliest.staff_id, staff_name: earliest.staff_name, slot: earliest.slot }]
         : []),
-    // A booking refused because the time had already passed hands back the
-    // same shape, so the apology arrives with real alternatives attached.
-    refusedOptions: byAction["propose_booking"]?.output?.options ?? [],
+    refusedOptions: refusal?.options ?? [],
   };
+}
+
+/** Every doctor id -> name a run's steps reveal, read from all of them.
+ *
+ * Deliberately not taken from `pickerSteps`: a slot picker labels its header
+ * with the doctor's name but only knows a `staff_id`, and the step that named
+ * that doctor is by then no longer the turn's question. */
+function doctorNamesFromSteps(steps: any[] = []): Record<string, string> {
+  const names: Record<string, string> = {};
+  for (const step of steps) {
+    const out = step?.output ?? {};
+    for (const d of out.doctors ?? []) names[d.id] = d.full_name;
+    for (const o of out.options ?? []) if (o?.staff_id) names[o.staff_id] = o.staff_name;
+    if (out.staff_id && out.staff_name) names[out.staff_id] = out.staff_name;
+  }
+  return names;
 }
 
 function BookingRunDetail({
@@ -109,12 +146,7 @@ function BookingRunDetail({
   // Any doctor names this run's steps reveal get shared upward so a slot
   // picker (which only knows a staff_id) can label its buttons with a name.
   useEffect(() => {
-    const names: Record<string, string> = {};
-    const picked = run?.steps ? pickerSteps(run.steps) : null;
-    for (const d of picked?.doctors ?? []) names[d.id] = d.full_name;
-    for (const o of [...(picked?.earliestOptions ?? []), ...(picked?.refusedOptions ?? [])]) {
-      if (o?.staff_id) names[o.staff_id] = o.staff_name;
-    }
+    const names = doctorNamesFromSteps(run?.steps);
     if (Object.keys(names).length) onDoctorsSeen(names);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [run?.steps]);
@@ -155,12 +187,13 @@ function BookingRunDetail({
       {run.result?.message && <p className="whitespace-pre-wrap">{run.result.message}</p>}
 
       {/* Interactive pickers, built straight from the agent's own tool
-          results — see `showPickers` for when they stay on screen. */}
+          results — `showPickers` decides whether this turn keeps them on
+          screen, `pickerSteps` decides which single one of them belongs to it. */}
       {showPickers && reasons && <ReasonPicker reasons={reasons} onPick={onSend} />}
-      {/* The opening screen offers these too, but the agent calls
-          `list_services` mid-conversation whenever the visitor hasn't settled
-          on one — without this the visitor is asked to choose from a list only
-          the model can see, and has to type the name back exactly. */}
+      {/* The opening screen offers these too, but the agent looks the
+          catalogue up again whenever the visitor hasn't settled on a service —
+          without this they are asked to choose from a list only the model can
+          see, and have to type the name back exactly. */}
       {showPickers && services && <ServicePicker services={services} onPick={onSend} />}
       {showPickers && doctors && <DoctorPicker doctors={doctors} onPick={onSend} />}
       {showPickers && slots?.slots && (

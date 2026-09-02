@@ -127,9 +127,15 @@ def _facts_for_session(session_id: str, exclude_run_id: str) -> str:
     breaking the "never invent an id" rule it was given because following it
     was impossible.
 
-    Re-reading the doctors and slots out of `agent_steps` puts those ids back
-    in front of the model. Only the two step types that carry an id are read;
-    everything else in the trace is noise for this purpose.
+    Re-reading the services, doctors and slots out of `agent_steps` puts those
+    ids back in front of the model. Only the step types that carry an id are
+    read; everything else in the trace is noise for this purpose.
+
+    Services are here for a second reason as well. Without them, a model that
+    needs a `service_id` has no way to get one except to call `list_services`
+    again — and the booking page draws every `list_services` result as the
+    service cards, so the visitor was shown the catalogue again on every turn
+    after they had already chosen from it.
     """
     runs = execute_with_retry(
         get_db().table("agent_runs").select("id")
@@ -144,10 +150,15 @@ def _facts_for_session(session_id: str, exclude_run_id: str) -> str:
         .in_("run_id", [r["id"] for r in runs]).order("timestamp")
     ).data or []
 
+    services: Dict[str, str] = {}  # id -> name
     doctors: Dict[str, str] = {}   # id -> name, deduped; later mentions win
     slots: List[str] = []
     for step in steps:
         output = step.get("output") or {}
+        # `list_services`, and also a `propose_booking` refused for a missing
+        # service — that refusal hands the whole catalogue back with it.
+        for service in output.get("services") or []:
+            services[service["id"]] = service["name"]
         if step.get("action") == "list_doctors":
             for doc in output.get("doctors") or []:
                 doctors[doc["id"]] = doc["full_name"]
@@ -164,6 +175,9 @@ def _facts_for_session(session_id: str, exclude_run_id: str) -> str:
                 slots.append(f"{name} at {slot}")
 
     parts: List[str] = []
+    if services:
+        listed = "; ".join(f"{name} (service_id={sid})" for sid, name in services.items())
+        parts.append(f"Services already shown to this visitor: {listed}.")
     if doctors:
         listed = "; ".join(f"{name} (staff_id={sid})" for sid, name in doctors.items())
         parts.append(f"Doctors already looked up in this conversation: {listed}.")
@@ -171,9 +185,11 @@ def _facts_for_session(session_id: str, exclude_run_id: str) -> str:
         parts.append(f"Slots already offered: {'; '.join(slots[-8:])}.")
     if parts:
         parts.append(
-            "Use these exact ids and times when the visitor refers back to a doctor "
-            "or slot from earlier — do not invent an id, and do not re-run a lookup "
-            "you already have the answer to."
+            "Use these exact ids and times when the visitor refers back to a service, "
+            "a doctor or a slot from earlier — do not invent an id, and do not re-run a "
+            "lookup you already have the answer to. Every list you fetch is drawn on "
+            "the visitor's screen as buttons, so listing the services or the doctors "
+            "again re-opens a question they have already answered."
         )
     return " ".join(parts)
 
